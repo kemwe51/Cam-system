@@ -6,6 +6,31 @@ type ReviewOptions = {
   model?: string;
 };
 
+function reviewContext(plan: DraftCamPlan) {
+  const manualOverrides = plan.operations
+    .filter((operation) => operation.origin === 'manual' || !operation.enabled)
+    .map((operation) => ({
+      id: operation.id,
+      name: operation.name,
+      featureId: operation.featureId,
+      origin: operation.origin,
+      enabled: operation.enabled,
+      setup: operation.setup,
+      strategy: operation.strategy,
+      estimatedMinutes: operation.estimatedMinutes,
+      toolName: operation.toolName,
+    }));
+
+  return {
+    plan,
+    draftSummary: {
+      manualOperationCount: plan.operations.filter((operation) => operation.origin === 'manual').length,
+      disabledOperationCount: plan.operations.filter((operation) => !operation.enabled).length,
+      manualOverrides,
+    },
+  };
+}
+
 function heuristicReview(plan: DraftCamPlan): CamReview {
   const riskFlags = plan.risks.map((risk) => `${risk.level.toUpperCase()}: ${risk.title}`);
   const missingOperations: string[] = [];
@@ -21,6 +46,14 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
 
   if (plan.features.every((feature) => feature.kind !== 'top_surface')) {
     missingOperations.push('Confirm whether an initial facing pass is still required to establish the Z datum.');
+  }
+
+  if (plan.operations.some((operation) => operation.origin === 'manual')) {
+    suggestedEdits.push('Manual operations are present; verify they do not duplicate or conflict with deterministic operations.');
+  }
+
+  if (plan.operations.some((operation) => !operation.enabled)) {
+    suggestedEdits.push('Disabled operations should be reviewed to confirm the feature still has complete machining coverage.');
   }
 
   return camReviewSchema.parse({
@@ -93,7 +126,9 @@ export async function reviewDraftPlan(
     'Review the provided deterministic draft plan for 2D and 2.5D milling only.',
     'Return strict JSON with keys: mode, missingOperations, riskFlags, suggestedEdits, overallAssessment.',
     'Do not invent geometry, do not output G-code, and do not override deterministic facts.',
-    JSON.stringify(plan),
+    'Manual operations, disabled operations, and user-edited strategy text are draft overrides that must be reviewed but never treated as authoritative geometry.',
+    'The payload below is structured JSON prepared for the OpenAI Responses API and includes manual override context.',
+    JSON.stringify(reviewContext(plan)),
   ].join('\n\n');
 
   try {

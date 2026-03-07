@@ -1,347 +1,834 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { CamReview, DraftCamPlan, PartInput } from '@cam/shared';
+import { useEffect, useMemo, useReducer, useState } from 'react';
+import type { JSX } from 'react';
 import './App.css';
+import {
+  approveDraftPlan,
+  generateDraftPlan,
+  loadProjectDraft,
+  loadSamplePart,
+  reviewDraftPlan,
+  saveProjectDraft,
+} from './api';
+import { Viewport3D } from './Viewport3D';
+import {
+  buildProjectDraft,
+  createProjectId,
+  getOrderedOperations,
+  initialWorkbenchState,
+  resolveSelectedFeatureId,
+  workbenchReducer,
+} from './workbenchReducer';
+import type { ViewOrientation } from './viewportScene';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
+type BusyState = 'sample' | 'plan' | 'review' | 'approve' | 'save' | 'load' | null;
+type BottomTab = 'review' | 'risks' | 'approval' | 'console';
+type PanelKey = 'tree' | 'inspector' | 'bottom';
 
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-    ...options,
-  });
+const bottomTabs: Array<{ id: BottomTab; label: string }> = [
+  { id: 'review', label: 'AI review' },
+  { id: 'risks', label: 'Risks + notes' },
+  { id: 'approval', label: 'Approval' },
+  { id: 'console', label: 'Console' },
+];
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with ${response.status}`);
+function panelSelectionClass(active: boolean): string {
+  return active ? 'tree-item tree-item-selected' : 'tree-item';
+}
+
+function formatTimestamp(value: string | null): string {
+  if (!value) {
+    return 'Not saved yet';
   }
 
-  return (await response.json()) as T;
+  return new Date(value).toLocaleString();
 }
 
 function App() {
-  const [sample, setSample] = useState<PartInput | null>(null);
-  const [plan, setPlan] = useState<DraftCamPlan | null>(null);
-  const [review, setReview] = useState<CamReview | null>(null);
+  const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'sample' | 'plan' | 'review' | 'approve' | null>(null);
+  const [busy, setBusy] = useState<BusyState>(null);
+  const [viewOrientation, setViewOrientation] = useState<ViewOrientation>('isometric');
+  const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>('review');
+  const [panelVisibility, setPanelVisibility] = useState<Record<PanelKey, boolean>>({
+    tree: true,
+    inspector: true,
+    bottom: true,
+  });
 
   useEffect(() => {
-    void loadSample();
+    void handleLoadSample();
   }, []);
 
-  async function loadSample(): Promise<void> {
+  const orderedOperations = useMemo(() => getOrderedOperations(state.draftPlan), [state.draftPlan]);
+  const selectedFeatureId = useMemo(
+    () => resolveSelectedFeatureId(state.draftPlan, state.selectedEntity),
+    [state.draftPlan, state.selectedEntity],
+  );
+  const selectedFeature = useMemo(
+    () => state.draftPlan?.features.find((feature) => feature.id === selectedFeatureId) ?? null,
+    [selectedFeatureId, state.draftPlan],
+  );
+  const selectedOperation = useMemo(
+    () =>
+      state.selectedEntity?.type === 'operation'
+        ? orderedOperations.find((operation) => operation.id === state.selectedEntity?.id) ?? null
+        : null,
+    [orderedOperations, state.selectedEntity],
+  );
+  const projectId = useMemo(
+    () => (state.sample ? createProjectId(state.sample) : state.draftPlan ? createProjectId(state.draftPlan.part) : null),
+    [state.draftPlan, state.sample],
+  );
+
+  async function withBusy(nextBusy: BusyState, action: () => Promise<void>): Promise<void> {
     try {
-      setBusy('sample');
+      setBusy(nextBusy);
       setError(null);
-      setSample(await fetchJson<PartInput>('/sample'));
-      setPlan(null);
-      setReview(null);
+      await action();
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to load sample part.');
+      setError(caughtError instanceof Error ? caughtError.message : 'Unexpected workbench error.');
     } finally {
       setBusy(null);
     }
   }
 
-  async function generatePlan(): Promise<void> {
-    if (!sample) {
+  async function handleLoadSample(): Promise<void> {
+    await withBusy('sample', async () => {
+      const sample = await loadSamplePart();
+      dispatch({
+        type: 'sampleLoaded',
+        sample,
+        message: `Loaded structured sample part ${sample.partId}.`,
+      });
+    });
+  }
+
+  async function handlePlan(): Promise<void> {
+    if (!state.sample) {
+      return;
+    }
+    const sample = state.sample;
+
+    await withBusy('plan', async () => {
+      const plan = await generateDraftPlan(sample);
+      dispatch({
+        type: 'planLoaded',
+        plan,
+        message: `Generated deterministic plan with ${plan.operations.length} operations.`,
+      });
+      setViewOrientation('fit');
+    });
+  }
+
+  async function handleReview(): Promise<void> {
+    if (!state.draftPlan) {
+      return;
+    }
+    const draftPlan = state.draftPlan;
+
+    await withBusy('review', async () => {
+      const review = await reviewDraftPlan(draftPlan);
+      dispatch({
+        type: 'reviewLoaded',
+        review,
+        message: `AI review returned in ${review.mode} mode.`,
+      });
+      setActiveBottomTab('review');
+    });
+  }
+
+  async function handleApprove(): Promise<void> {
+    if (!state.draftPlan) {
+      return;
+    }
+    const draftPlan = state.draftPlan;
+
+    await withBusy('approve', async () => {
+      const plan = await approveDraftPlan(draftPlan);
+      dispatch({
+        type: 'approvalLoaded',
+        plan,
+        message: 'Approval state updated from the workbench.',
+      });
+      setActiveBottomTab('approval');
+    });
+  }
+
+  async function handleSaveDraft(): Promise<void> {
+    const projectDraft = buildProjectDraft(state);
+    if (!projectDraft) {
       return;
     }
 
-    try {
-      setBusy('plan');
-      setError(null);
-      setReview(null);
-      setPlan(
-        await fetchJson<DraftCamPlan>('/plan', {
-          method: 'POST',
-          body: JSON.stringify(sample),
-        }),
-      );
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to build plan.');
-    } finally {
-      setBusy(null);
-    }
+    await withBusy('save', async () => {
+      const savedDraft = await saveProjectDraft(projectDraft);
+      dispatch({
+        type: 'projectSaved',
+        savedAt: savedDraft.savedAt ?? new Date().toISOString(),
+        message: `Saved draft foundation ${savedDraft.projectId} to the API store.`,
+      });
+      setActiveBottomTab('console');
+    });
   }
 
-  async function runReview(): Promise<void> {
-    if (!plan) {
+  async function handleLoadDraft(): Promise<void> {
+    if (!projectId) {
       return;
     }
 
-    try {
-      setBusy('review');
-      setError(null);
-      setReview(
-        await fetchJson<CamReview>('/review', {
-          method: 'POST',
-          body: JSON.stringify({ plan }),
-        }),
-      );
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to run review.');
-    } finally {
-      setBusy(null);
-    }
+    await withBusy('load', async () => {
+      const project = await loadProjectDraft(projectId);
+      dispatch({
+        type: 'projectLoaded',
+        project,
+        message: `Loaded saved draft ${project.projectId} from the API store.`,
+      });
+      setActiveBottomTab('console');
+      setViewOrientation('fit');
+    });
   }
 
-  async function approve(): Promise<void> {
-    if (!plan) {
-      return;
-    }
-
-    try {
-      setBusy('approve');
-      setError(null);
-      setPlan(
-        await fetchJson<DraftCamPlan>('/approve', {
-          method: 'POST',
-          body: JSON.stringify({
-            plan,
-            approver: 'Demo Programmer',
-            notes: 'Approved from the mobile-first review console demo.',
-          }),
-        }),
-      );
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to approve plan.');
-    } finally {
-      setBusy(null);
-    }
+  function togglePanel(panelKey: PanelKey): void {
+    setPanelVisibility((current) => ({
+      ...current,
+      [panelKey]: !current[panelKey],
+    }));
   }
 
-  const partCounts = useMemo(() => {
-    if (!sample) {
-      return [];
+  function renderBottomPanel(): JSX.Element {
+    if (activeBottomTab === 'review') {
+      return state.review ? (
+        <div className="bottom-grid">
+          <article className="bottom-card">
+            <header>
+              <h3>Assessment</h3>
+              <span className="chip">{state.review.mode}</span>
+            </header>
+            <p>{state.review.overallAssessment}</p>
+          </article>
+          <article className="bottom-card">
+            <header>
+              <h3>Missing operations</h3>
+            </header>
+            <ul>
+              {(state.review.missingOperations.length > 0
+                ? state.review.missingOperations
+                : ['No additional missing operations flagged by the advisory review.']).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </article>
+          <article className="bottom-card">
+            <header>
+              <h3>Suggested edits</h3>
+            </header>
+            <ul>
+              {(state.review.suggestedEdits.length > 0
+                ? state.review.suggestedEdits
+                : ['No additional advisory edits were suggested.']).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </article>
+        </div>
+      ) : (
+        <p className="empty-state">Run the advisory review after planning or manual edits.</p>
+      );
     }
 
-    return [
-      ['Top surfaces', sample.topSurfaces.length],
-      ['Contours', sample.contours.length],
-      ['Pockets', sample.pockets.length],
-      ['Slots', sample.slots.length],
-      ['Hole groups', sample.holeGroups.length],
-      ['Chamfers', sample.chamfers.length],
-      ['Engraving', sample.engraving.length],
-    ];
-  }, [sample]);
+    if (activeBottomTab === 'risks') {
+      return state.draftPlan ? (
+        <div className="bottom-grid">
+          <article className="bottom-card">
+            <header>
+              <h3>Risks</h3>
+            </header>
+            <div className="stacked-list">
+              {state.draftPlan.risks.length > 0 ? (
+                state.draftPlan.risks.map((risk) => (
+                  <button
+                    type="button"
+                    key={risk.id}
+                    className={panelSelectionClass(
+                      state.selectedEntity?.type === 'risk' && state.selectedEntity.id === risk.id,
+                    )}
+                    onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'risk', id: risk.id } })}
+                  >
+                    <strong>{risk.title}</strong>
+                    <span className={`risk-pill risk-${risk.level}`}>{risk.level}</span>
+                    <small>{risk.description}</small>
+                  </button>
+                ))
+              ) : (
+                <p className="empty-state">No deterministic risks were triggered.</p>
+              )}
+            </div>
+          </article>
+          <article className="bottom-card">
+            <header>
+              <h3>Checklist</h3>
+            </header>
+            <ul className="detail-list">
+              {state.draftPlan.checklist.map((item) => (
+                <li key={item.id}>
+                  <strong>{item.title}</strong>
+                  <span>{item.rationale}</span>
+                </li>
+              ))}
+            </ul>
+          </article>
+        </div>
+      ) : (
+        <p className="empty-state">Plan the part to inspect deterministic risks and review notes.</p>
+      );
+    }
+
+    if (activeBottomTab === 'approval') {
+      return state.draftPlan ? (
+        <div className="bottom-grid">
+          <article className="bottom-card">
+            <header>
+              <h3>Approval state</h3>
+              <span className={`chip chip-${state.draftPlan.approval.state}`}>
+                {state.draftPlan.approval.state.replace('_', ' ')}
+              </span>
+            </header>
+            <dl className="detail-pairs">
+              <div>
+                <dt>Human approval</dt>
+                <dd>{state.draftPlan.approval.requiresHumanApproval ? 'Required' : 'Not required'}</dd>
+              </div>
+              <div>
+                <dt>Approved by</dt>
+                <dd>{state.draftPlan.approval.approvedBy ?? 'Pending'}</dd>
+              </div>
+              <div>
+                <dt>Saved draft</dt>
+                <dd>{formatTimestamp(state.lastSavedAt)}</dd>
+              </div>
+              <div>
+                <dt>Dirty state</dt>
+                <dd>{state.dirty ? 'Unsaved manual changes' : 'In sync with last saved/generated state'}</dd>
+              </div>
+            </dl>
+          </article>
+          <article className="bottom-card">
+            <header>
+              <h3>Approval notes</h3>
+            </header>
+            <ul>
+              {state.draftPlan.approval.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </article>
+        </div>
+      ) : (
+        <p className="empty-state">Approval state appears once a deterministic plan exists.</p>
+      );
+    }
+
+    return (
+      <ul className="console-list">
+        {state.consoleMessages.map((message) => (
+          <li key={message}>{message}</li>
+        ))}
+      </ul>
+    );
+  }
 
   return (
-    <main className="app-shell">
-      <header className="hero-card">
-        <div>
-          <p className="eyebrow">Programmer-in-the-loop CAM</p>
-          <h1>Draft review console for 2D and 2.5D milling</h1>
-          <p className="hero-copy">
-            Deterministic planning prepares the draft. AI review stays advisory. Human approval is
-            required before release.
+    <main className="workbench-shell">
+      <header className="toolbar-shell">
+        <div className="toolbar-copy">
+          <p className="eyebrow">Programmer-in-the-loop CAM workbench</p>
+          <h1>Manual planning foundation for 2D / 2.5D milling</h1>
+          <p>
+            Deterministic planning remains authoritative. The viewport is a derived scene from structured
+            JSON input, and AI review stays advisory only.
           </p>
         </div>
-        <div className="action-row">
-          <button onClick={() => void loadSample()} disabled={busy !== null}>
-            {busy === 'sample' ? 'Loading sample…' : 'Reload sample'}
+        <div className="toolbar-group">
+          <button onClick={() => void handleLoadSample()} disabled={busy !== null}>
+            {busy === 'sample' ? 'Loading…' : 'Reload sample'}
           </button>
-          <button onClick={() => void generatePlan()} disabled={!sample || busy !== null}>
-            {busy === 'plan' ? 'Planning…' : 'Generate draft plan'}
+          <button onClick={() => void handlePlan()} disabled={!state.sample || busy !== null}>
+            {busy === 'plan' ? 'Planning…' : 'Plan'}
           </button>
-          <button onClick={() => void runReview()} disabled={!plan || busy !== null}>
-            {busy === 'review' ? 'Reviewing…' : 'Run AI review'}
+          <button onClick={() => void handleReview()} disabled={!state.draftPlan || busy !== null}>
+            {busy === 'review' ? 'Reviewing…' : 'Review'}
           </button>
-          <button onClick={() => void approve()} disabled={!plan || busy !== null}>
-            {busy === 'approve' ? 'Approving…' : 'Approve draft'}
+          <button onClick={() => void handleApprove()} disabled={!state.draftPlan || busy !== null}>
+            {busy === 'approve' ? 'Approving…' : 'Approve'}
+          </button>
+          <button onClick={() => void handleSaveDraft()} disabled={!state.draftPlan || busy !== null}>
+            {busy === 'save' ? 'Saving…' : 'Save draft'}
+          </button>
+          <button onClick={() => void handleLoadDraft()} disabled={!projectId || busy !== null}>
+            {busy === 'load' ? 'Loading…' : 'Load draft'}
           </button>
         </div>
+        <div className="toolbar-group toolbar-group-secondary">
+          {(['isometric', 'top', 'front', 'fit'] as ViewOrientation[]).map((orientation) => (
+            <button
+              key={orientation}
+              type="button"
+              className={viewOrientation === orientation ? 'secondary-button active-button' : 'secondary-button'}
+              onClick={() => setViewOrientation(orientation)}
+            >
+              {orientation}
+            </button>
+          ))}
+          {(['tree', 'inspector', 'bottom'] as PanelKey[]).map((panelKey) => (
+            <button
+              key={panelKey}
+              type="button"
+              className={panelVisibility[panelKey] ? 'secondary-button active-button' : 'secondary-button'}
+              onClick={() => togglePanel(panelKey)}
+            >
+              {panelKey}
+            </button>
+          ))}
+          <span className={state.dirty ? 'chip chip-dirty' : 'chip'}>
+            {state.dirty ? 'Unsaved manual edits' : 'Draft synced'}
+          </span>
+        </div>
+        {error ? <div className="error-banner">{error}</div> : null}
       </header>
 
-      {error ? <section className="error-banner">{error}</section> : null}
-
-      <section className="grid-layout">
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>Sample part input</h2>
-            {sample ? <span className="chip">{sample.partId}</span> : null}
-          </div>
-          {sample ? (
-            <>
-              <p className="panel-copy">
-                {sample.partName} rev {sample.revision} · {sample.stock.material}
-              </p>
-              <dl className="stats-grid">
+      <section className="workbench-grid">
+        {panelVisibility.tree ? (
+          <aside className="workbench-panel tree-panel">
+            <div className="panel-header">
+              <div>
+                <p className="panel-label">Project tree</p>
+                <h2>{state.sample?.partName ?? 'No part loaded'}</h2>
+              </div>
+              {projectId ? <span className="chip">{projectId}</span> : null}
+            </div>
+            {state.sample ? (
+              <dl className="summary-list">
                 <div>
                   <dt>Stock</dt>
                   <dd>
-                    {sample.stock.xMm} × {sample.stock.yMm} × {sample.stock.zMm} mm
+                    {state.sample.stock.xMm} × {state.sample.stock.yMm} × {state.sample.stock.zMm} mm
                   </dd>
                 </div>
-                {partCounts.map(([label, value]) => (
-                  <div key={label}>
-                    <dt>{label}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </>
-          ) : (
-            <p className="panel-copy">Load the sample part input to begin.</p>
-          )}
-        </article>
-
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>Approval state</h2>
-            {plan ? <span className={`chip chip-${plan.approval.state}`}>{plan.approval.state}</span> : null}
-          </div>
-          {plan ? (
-            <>
-              <p className="panel-copy">
-                {plan.summary.featureCount} normalized features · {plan.summary.operationCount} proposed operations ·
-                {` `}{plan.estimatedCycleTimeMinutes} min estimated cycle time
-              </p>
-              <ul className="simple-list">
-                <li>Highest risk: {plan.summary.highestRisk}</li>
-                <li>Human approval required: {plan.approval.requiresHumanApproval ? 'Yes' : 'No'}</li>
-                <li>Approved by: {plan.approval.approvedBy ?? 'Pending review'}</li>
-              </ul>
-            </>
-          ) : (
-            <p className="panel-copy">Generate a draft plan to review approval state.</p>
-          )}
-        </article>
-      </section>
-
-      <section className="grid-layout">
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>Normalized features</h2>
-            {plan ? <span className="chip">{plan.features.length}</span> : null}
-          </div>
-          <div className="stacked-list">
-            {plan?.features.map((feature) => (
-              <div key={feature.id} className="list-card">
-                <div className="list-card-header">
-                  <strong>{feature.name}</strong>
-                  <span>{feature.kind.replace('_', ' ')}</span>
+                <div>
+                  <dt>Material</dt>
+                  <dd>{state.sample.stock.material}</dd>
                 </div>
-                <p>
-                  Depth {feature.depthMm} mm · Size {feature.lengthMm} × {feature.widthMm} mm · Qty {feature.quantity}
-                </p>
-                <ul>
-                  {feature.notes.map((note) => (
+                <div>
+                  <dt>Revision</dt>
+                  <dd>{state.sample.revision}</dd>
+                </div>
+                <div>
+                  <dt>Last save</dt>
+                  <dd>{formatTimestamp(state.lastSavedAt)}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="empty-state">Load the structured part input to initialize the workbench.</p>
+            )}
+            <div className="tree-section">
+              <div className="tree-section-header">
+                <h3>Features</h3>
+                <span className="chip">{state.draftPlan?.features.length ?? 0}</span>
+              </div>
+              <div className="tree-stack">
+                {state.draftPlan?.features.map((feature) => (
+                  <button
+                    type="button"
+                    key={feature.id}
+                    className={panelSelectionClass(
+                      state.selectedEntity?.type === 'feature' && state.selectedEntity.id === feature.id,
+                    )}
+                    onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'feature', id: feature.id } })}
+                  >
+                    <strong>{feature.name}</strong>
+                    <span>{feature.kind.replace('_', ' ')}</span>
+                    <small>
+                      Qty {feature.quantity} · {feature.lengthMm.toFixed(1)} × {feature.widthMm.toFixed(1)} ×{' '}
+                      {feature.depthMm.toFixed(1)} mm
+                    </small>
+                  </button>
+                )) ?? <p className="empty-state">Generate a plan to populate the feature tree.</p>}
+              </div>
+            </div>
+            <div className="tree-section">
+              <div className="tree-section-header">
+                <h3>Operations</h3>
+                <span className="chip">{orderedOperations.length}</span>
+              </div>
+              <div className="tree-stack">
+                {orderedOperations.length > 0 ? (
+                  orderedOperations.map((operation, index) => (
+                    <div key={operation.id} className="tree-operation-row">
+                      <button
+                        type="button"
+                        className={panelSelectionClass(
+                          state.selectedEntity?.type === 'operation' && state.selectedEntity.id === operation.id,
+                        )}
+                        onClick={() =>
+                          dispatch({ type: 'selectEntity', entity: { type: 'operation', id: operation.id } })
+                        }
+                      >
+                        <strong>
+                          {index + 1}. {operation.name}
+                        </strong>
+                        <span>
+                          {operation.origin} · {operation.enabled ? 'enabled' : 'disabled'}
+                        </span>
+                        <small>
+                          {operation.setup} · {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min
+                        </small>
+                      </button>
+                      <div className="tree-controls">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() =>
+                            dispatch({
+                              type: 'moveOperation',
+                              operationId: operation.id,
+                              direction: 'up',
+                              message: `Moved ${operation.name} earlier in the draft order.`,
+                            })
+                          }
+                          disabled={index === 0}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() =>
+                            dispatch({
+                              type: 'moveOperation',
+                              operationId: operation.id,
+                              direction: 'down',
+                              message: `Moved ${operation.name} later in the draft order.`,
+                            })
+                          }
+                          disabled={index === orderedOperations.length - 1}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty-state">Manual and automatic operations appear after planning.</p>
+                )}
+              </div>
+            </div>
+          </aside>
+        ) : null}
+
+        <section className="workbench-panel viewport-panel">
+          <div className="panel-header">
+            <div>
+              <p className="panel-label">Viewport</p>
+              <h2>Derived stock and feature view</h2>
+            </div>
+            {state.draftPlan ? <span className="chip">{state.draftPlan.summary.featureCount} features</span> : null}
+          </div>
+          {state.draftPlan ? (
+            <>
+              <Viewport3D
+                part={state.draftPlan.part}
+                features={state.draftPlan.features}
+                selectedFeatureId={selectedFeatureId}
+                onSelectFeature={(featureId) =>
+                  dispatch({
+                    type: 'selectEntity',
+                    entity: featureId ? { type: 'feature', id: featureId } : null,
+                  })
+                }
+                viewOrientation={viewOrientation}
+              />
+              <div className="viewport-status-bar">
+                <span>
+                  Highest risk: <strong>{state.draftPlan.summary.highestRisk}</strong>
+                </span>
+                <span>
+                  Enabled cycle time: <strong>{state.draftPlan.estimatedCycleTimeMinutes.toFixed(1)} min</strong>
+                </span>
+                <span>
+                  Approval: <strong>{state.draftPlan.approval.state.replace('_', ' ')}</strong>
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="viewport-placeholder">
+              <p>Generate a deterministic draft plan to populate the derived viewport scene and workbench trees.</p>
+            </div>
+          )}
+        </section>
+
+        {panelVisibility.inspector ? (
+          <aside className="workbench-panel inspector-panel">
+            <div className="panel-header">
+              <div>
+                <p className="panel-label">Inspector</p>
+                <h2>
+                  {selectedOperation
+                    ? selectedOperation.name
+                    : selectedFeature
+                      ? selectedFeature.name
+                      : 'Select a feature or operation'}
+                </h2>
+              </div>
+              {selectedOperation ? (
+                <span className="chip">{selectedOperation.origin}</span>
+              ) : selectedFeature ? (
+                <span className="chip">{selectedFeature.kind.replace('_', ' ')}</span>
+              ) : null}
+            </div>
+            {selectedOperation && state.draftPlan ? (
+              <div className="inspector-form">
+                <label>
+                  <span>Operation name</span>
+                  <input
+                    value={selectedOperation.name}
+                    onChange={(event) =>
+                      dispatch({
+                        type: 'updateOperation',
+                        operationId: selectedOperation.id,
+                        changes: { name: event.target.value },
+                        message: `Updated operation name for ${selectedOperation.name}.`,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Strategy</span>
+                  <textarea
+                    rows={5}
+                    value={selectedOperation.strategy}
+                    onChange={(event) =>
+                      dispatch({
+                        type: 'updateOperation',
+                        operationId: selectedOperation.id,
+                        changes: { strategy: event.target.value },
+                        message: `Updated strategy for ${selectedOperation.name}.`,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Setup</span>
+                  <input
+                    value={selectedOperation.setup}
+                    onChange={(event) =>
+                      dispatch({
+                        type: 'updateOperation',
+                        operationId: selectedOperation.id,
+                        changes: { setup: event.target.value },
+                        message: `Updated setup for ${selectedOperation.name}.`,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Estimated minutes</span>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.1"
+                    value={selectedOperation.estimatedMinutes}
+                    onChange={(event) => {
+                      const nextMinutes = Number(event.target.value);
+                      if (!Number.isFinite(nextMinutes) || nextMinutes < 0.5) {
+                        return;
+                      }
+                      dispatch({
+                        type: 'updateOperation',
+                        operationId: selectedOperation.id,
+                        changes: { estimatedMinutes: nextMinutes },
+                        message: `Updated estimated time for ${selectedOperation.name}.`,
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>Selected tool</span>
+                  <select
+                    value={selectedOperation.toolId}
+                    onChange={(event) =>
+                      dispatch({
+                        type: 'updateOperation',
+                        operationId: selectedOperation.id,
+                        changes: { toolId: event.target.value },
+                        message: `Selected a different tool for ${selectedOperation.name}.`,
+                      })
+                    }
+                  >
+                    {state.draftPlan.tools.map((tool) => (
+                      <option key={tool.id} value={tool.id}>
+                        {tool.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedOperation.enabled}
+                    onChange={() =>
+                      dispatch({
+                        type: 'toggleOperation',
+                        operationId: selectedOperation.id,
+                        message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.`,
+                      })
+                    }
+                  />
+                  <span>Enabled for the draft sequence</span>
+                </label>
+                <div className="inspector-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      dispatch({
+                        type: 'moveOperation',
+                        operationId: selectedOperation.id,
+                        direction: 'up',
+                        message: `Moved ${selectedOperation.name} earlier in the draft order.`,
+                      })
+                    }
+                  >
+                    Move up
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      dispatch({
+                        type: 'moveOperation',
+                        operationId: selectedOperation.id,
+                        direction: 'down',
+                        message: `Moved ${selectedOperation.name} later in the draft order.`,
+                      })
+                    }
+                  >
+                    Move down
+                  </button>
+                </div>
+                <dl className="detail-pairs">
+                  <div>
+                    <dt>Order</dt>
+                    <dd>{selectedOperation.order + 1}</dd>
+                  </div>
+                  <div>
+                    <dt>Origin</dt>
+                    <dd>{selectedOperation.origin}</dd>
+                  </div>
+                  <div>
+                    <dt>Feature</dt>
+                    <dd>{selectedFeature?.name ?? selectedOperation.featureId}</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{selectedOperation.enabled ? 'Enabled' : 'Disabled'}</dd>
+                  </div>
+                </dl>
+              </div>
+            ) : selectedFeature && state.draftPlan ? (
+              <div className="inspector-form">
+                <dl className="detail-pairs">
+                  <div>
+                    <dt>Kind</dt>
+                    <dd>{selectedFeature.kind.replace('_', ' ')}</dd>
+                  </div>
+                  <div>
+                    <dt>Quantity</dt>
+                    <dd>{selectedFeature.quantity}</dd>
+                  </div>
+                  <div>
+                    <dt>Depth</dt>
+                    <dd>{selectedFeature.depthMm.toFixed(1)} mm</dd>
+                  </div>
+                  <div>
+                    <dt>Envelope</dt>
+                    <dd>
+                      {selectedFeature.lengthMm.toFixed(1)} × {selectedFeature.widthMm.toFixed(1)} mm
+                    </dd>
+                  </div>
+                </dl>
+                <ul className="detail-list">
+                  {selectedFeature.notes.map((note) => (
                     <li key={note}>{note}</li>
                   ))}
                 </ul>
-              </div>
-            )) ?? <p className="panel-copy">No deterministic features yet.</p>}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>Operations and tools</h2>
-            {plan ? <span className="chip">{plan.operations.length}</span> : null}
-          </div>
-          <div className="stacked-list">
-            {plan?.operations.map((operation) => (
-              <div key={operation.id} className="list-card">
-                <div className="list-card-header">
-                  <strong>{operation.name}</strong>
-                  <span>{operation.estimatedMinutes} min</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    dispatch({
+                      type: 'addManualOperation',
+                      featureId: selectedFeature.id,
+                      message: `Added a manual operation for ${selectedFeature.name}.`,
+                    })
+                  }
+                >
+                  Add manual operation
+                </button>
+                <div className="inspector-subsection">
+                  <h3>Related operations</h3>
+                  <div className="tree-stack">
+                    {orderedOperations
+                      .filter((operation) => operation.featureId === selectedFeature.id)
+                      .map((operation) => (
+                        <button
+                          key={operation.id}
+                          type="button"
+                          className={panelSelectionClass(
+                            state.selectedEntity?.type === 'operation' && state.selectedEntity.id === operation.id,
+                          )}
+                          onClick={() =>
+                            dispatch({ type: 'selectEntity', entity: { type: 'operation', id: operation.id } })
+                          }
+                        >
+                          <strong>{operation.name}</strong>
+                          <span>{operation.origin}</span>
+                          <small>{operation.toolName}</small>
+                        </button>
+                      ))}
+                  </div>
                 </div>
-                <p>{operation.strategy}</p>
-                <p>
-                  {operation.setup} · {operation.toolName}
-                </p>
               </div>
-            )) ?? <p className="panel-copy">No operations yet.</p>}
-          </div>
-        </article>
+            ) : (
+              <p className="empty-state">
+                Select a feature in the tree or viewport, or select an operation to edit manual planning fields.
+              </p>
+            )}
+          </aside>
+        ) : null}
       </section>
 
-      <section className="grid-layout">
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>Risks and checklist</h2>
-            {plan ? <span className="chip">{plan.risks.length + plan.checklist.length}</span> : null}
-          </div>
-          {plan ? (
-            <div className="stacked-list">
-              {plan.risks.map((risk) => (
-                <div key={risk.id} className="list-card">
-                  <div className="list-card-header">
-                    <strong>{risk.title}</strong>
-                    <span className={`risk-pill risk-${risk.level}`}>{risk.level}</span>
-                  </div>
-                  <p>{risk.description}</p>
-                </div>
-              ))}
-              {plan.checklist.map((item) => (
-                <div key={item.id} className="list-card">
-                  <div className="list-card-header">
-                    <strong>{item.title}</strong>
-                    <span>{item.status}</span>
-                  </div>
-                  <p>{item.rationale}</p>
-                </div>
-              ))}
+      {panelVisibility.bottom ? (
+        <section className="workbench-panel bottom-panel">
+          <div className="panel-header bottom-panel-header">
+            <div>
+              <p className="panel-label">Review + release</p>
+              <h2>Risks, AI review, approval, and console</h2>
             </div>
-          ) : (
-            <p className="panel-copy">Generate a plan to see deterministic risks and checklist items.</p>
-          )}
-        </article>
-
-        <article className="panel">
-          <div className="panel-heading">
-            <h2>AI advisory review</h2>
-            {review ? <span className="chip">{review.mode}</span> : null}
+            <nav className="tab-strip" aria-label="Workbench detail tabs">
+              {bottomTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={activeBottomTab === tab.id ? 'secondary-button active-button' : 'secondary-button'}
+                  onClick={() => setActiveBottomTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
           </div>
-          {review ? (
-            <div className="stacked-list">
-              <div className="list-card">
-                <div className="list-card-header">
-                  <strong>Overall assessment</strong>
-                </div>
-                <p>{review.overallAssessment}</p>
-              </div>
-              <div className="list-card">
-                <div className="list-card-header">
-                  <strong>Missing operations</strong>
-                </div>
-                <ul>
-                  {(review.missingOperations.length > 0 ? review.missingOperations : ['No likely missing operations identified by the advisory review.']).map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="list-card">
-                <div className="list-card-header">
-                  <strong>Risk flags</strong>
-                </div>
-                <ul>
-                  {(review.riskFlags.length > 0 ? review.riskFlags : ['No additional advisory risk flags.']).map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="list-card">
-                <div className="list-card-header">
-                  <strong>Suggested edits</strong>
-                </div>
-                <ul>
-                  {(review.suggestedEdits.length > 0 ? review.suggestedEdits : ['No advisory edits suggested.']).map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          ) : (
-            <p className="panel-copy">Run the AI review after generating a deterministic draft plan.</p>
-          )}
-        </article>
-      </section>
+          {renderBottomPanel()}
+        </section>
+      ) : null}
     </main>
   );
 }

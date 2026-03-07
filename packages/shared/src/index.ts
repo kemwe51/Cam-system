@@ -125,6 +125,9 @@ export const operationSchema = z.object({
   setup: z.string().min(1),
   strategy: z.string().min(1),
   estimatedMinutes: positiveNumber,
+  enabled: z.boolean().default(true),
+  origin: z.enum(['automatic', 'manual']).default('automatic'),
+  order: z.number().int().nonnegative().default(0),
 });
 
 export const riskSchema = z.object({
@@ -156,6 +159,11 @@ export const planSummarySchema = z.object({
   highestRisk: riskLevelSchema,
 });
 
+export const selectedEntitySchema = z.object({
+  type: z.enum(['feature', 'operation', 'risk', 'checklist', 'review', 'approval']),
+  id: z.string().min(1),
+});
+
 export const draftCamPlanSchema = z.object({
   part: partInputSchema,
   features: z.array(normalizedFeatureSchema),
@@ -179,6 +187,14 @@ export const camReviewSchema = z.object({
 
 export const reviewRequestSchema = z.object({
   plan: draftCamPlanSchema,
+});
+
+export const projectDraftSchema = z.object({
+  projectId: z.string().min(1),
+  plan: draftCamPlanSchema,
+  review: camReviewSchema.optional(),
+  selectedEntity: selectedEntitySchema.optional(),
+  savedAt: z.string().datetime().optional(),
 });
 
 export const approvalRequestSchema = z.object({
@@ -272,8 +288,10 @@ export type NormalizedFeature = z.infer<typeof normalizedFeatureSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type PartInput = z.infer<typeof partInputSchema>;
 export type PocketInput = z.infer<typeof pocketSchema>;
+export type ProjectDraft = z.infer<typeof projectDraftSchema>;
 export type ReviewRequest = z.infer<typeof reviewRequestSchema>;
 export type Risk = z.infer<typeof riskSchema>;
 export type RiskLevel = z.infer<typeof riskLevelSchema>;
+export type SelectedEntity = z.infer<typeof selectedEntitySchema>;
 export type SlotInput = z.infer<typeof slotSchema>;
 export type Tool = z.infer<typeof toolSchema>;
