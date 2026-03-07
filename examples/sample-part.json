@@ -1,0 +1,72 @@
+{
+  "partId": "demo-bracket-001",
+  "partName": "Demo Motor Bracket",
+  "revision": "A",
+  "stock": {
+    "material": "Aluminum 6061",
+    "xMm": 120,
+    "yMm": 80,
+    "zMm": 25
+  },
+  "topSurfaces": [
+    {
+      "id": "top-1",
+      "name": "Main top surface",
+      "areaMm2": 9600,
+      "finish": "face_milled"
+    }
+  ],
+  "contours": [
+    {
+      "id": "contour-1",
+      "name": "Outer profile",
+      "lengthMm": 360,
+      "depthMm": 8
+    }
+  ],
+  "pockets": [
+    {
+      "id": "pocket-1",
+      "name": "Center relief pocket",
+      "lengthMm": 50,
+      "widthMm": 30,
+      "depthMm": 14
+    }
+  ],
+  "slots": [
+    {
+      "id": "slot-1",
+      "name": "Cable slot",
+      "lengthMm": 45,
+      "widthMm": 4,
+      "depthMm": 6
+    }
+  ],
+  "holeGroups": [
+    {
+      "id": "holes-1",
+      "name": "Mounting hole group",
+      "count": 4,
+      "diameterMm": 6,
+      "depthMm": 18,
+      "pattern": "rectangle"
+    }
+  ],
+  "chamfers": [
+    {
+      "id": "chamfer-1",
+      "name": "Outer edge break",
+      "lengthMm": 360,
+      "sizeMm": 1
+    }
+  ],
+  "engraving": [
+    {
+      "id": "engrave-1",
+      "name": "Part mark",
+      "text": "BRKT-A",
+      "lengthMm": 24,
+      "depthMm": 0.3
+    }
+  ]
+}

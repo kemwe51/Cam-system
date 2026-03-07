@@ -1,0 +1,16 @@
+{
+  "name": "CAM Review Console",
+  "short_name": "CAM Review",
+  "display": "standalone",
+  "start_url": "/",
+  "background_color": "#020617",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

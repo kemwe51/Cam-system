@@ -1,0 +1,17 @@
+{
+  "name": "@cam/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --watch src/server.ts"
+  },
+  "dependencies": {
+    "@cam/ai": "file:../../packages/ai",
+    "@cam/engine": "file:../../packages/engine",
+    "@cam/shared": "file:../../packages/shared"
+  }
+}
