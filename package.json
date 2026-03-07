@@ -1,0 +1,22 @@
+{
+  "name": "cam-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @cam/shared && npm run build --workspace @cam/engine && npm run build --workspace @cam/ai && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
+    "test": "npm run build --workspace @cam/shared && npm run test --workspace @cam/engine",
+    "test:all": "npm run test --workspaces --if-present",
+    "dev:api": "npm run dev --workspace @cam/api",
+    "dev:web": "npm run dev --workspace @cam/web"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
