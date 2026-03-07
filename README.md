@@ -18,7 +18,7 @@ Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop 
 npm install
 npm run build
 npm run test
-node /home/runner/work/Cam-system/Cam-system/apps/api/dist/server.js
+node apps/api/dist/server.js
 ```
 
 Then run the web app with:
@@ -28,3 +28,5 @@ npm run dev:web
 ```
 
 The default API URL for the web app is `http://localhost:3001`.
+
+For production-style API deployment, set `CAM_WEB_ORIGIN` explicitly so the API only accepts the intended web origin.

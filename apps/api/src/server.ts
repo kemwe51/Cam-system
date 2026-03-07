@@ -6,11 +6,43 @@ import { ZodError } from 'zod';
 
 const port = Number(process.env.PORT ?? 3001);
 
-function sendJson(response: import('node:http').ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, {
-    'Access-Control-Allow-Origin': '*',
+if (process.env.NODE_ENV === 'production' && !process.env.CAM_WEB_ORIGIN) {
+  throw new Error('CAM_WEB_ORIGIN must be set when NODE_ENV=production.');
+}
+
+const allowedOrigins = new Set(
+  (
+    process.env.CAM_WEB_ORIGIN ??
+    'http://localhost:4173,http://127.0.0.1:4173,http://localhost:5173,http://127.0.0.1:5173'
+  )
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+
+function corsHeaders(requestOrigin?: string): Record<string, string> {
+  const origin = requestOrigin && allowedOrigins.has(requestOrigin)
+    ? requestOrigin
+    : !requestOrigin
+      ? [...allowedOrigins][0] ?? ''
+      : '';
+
+  return {
+    ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    Vary: 'Origin',
+  };
+}
+
+function sendJson(
+  response: import('node:http').ServerResponse,
+  statusCode: number,
+  body: unknown,
+  requestOrigin?: string,
+): void {
+  response.writeHead(statusCode, {
+    ...corsHeaders(requestOrigin),
     'Content-Type': 'application/json; charset=utf-8',
   });
   response.end(JSON.stringify(body, null, 2));
@@ -36,12 +68,16 @@ async function readJson(request: import('node:http').IncomingMessage): Promise<u
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const requestOrigin = request.headers.origin;
+
+    if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+      sendJson(response, 403, { error: 'Origin not allowed' }, requestOrigin);
+      return;
+    }
 
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        ...corsHeaders(requestOrigin),
       });
       response.end();
       return;
@@ -52,18 +88,18 @@ const server = createServer(async (request, response) => {
         status: 'ok',
         service: 'cam-api',
         timestamp: new Date().toISOString(),
-      });
+      }, requestOrigin);
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/sample') {
-      sendJson(response, 200, samplePartInput);
+      sendJson(response, 200, samplePartInput, requestOrigin);
       return;
     }
 
     if (request.method === 'POST' && url.pathname === '/plan') {
       const body = partInputSchema.parse(await readJson(request));
-      sendJson(response, 200, planPart(body));
+      sendJson(response, 200, planPart(body), requestOrigin);
       return;
     }
 
@@ -76,40 +112,40 @@ const server = createServer(async (request, response) => {
       const review = await reviewDraftPlan(body.plan, {
         ...reviewOptions,
       });
-      sendJson(response, 200, review);
+      sendJson(response, 200, review, requestOrigin);
       return;
     }
 
     if (request.method === 'POST' && url.pathname === '/approve') {
       const body = approvalRequestSchema.parse(await readJson(request));
-      sendJson(response, 200, approvePlan(body));
+      sendJson(response, 200, approvePlan(body), requestOrigin);
       return;
     }
 
     sendJson(response, 404, {
       error: 'Not found',
       path: url.pathname,
-    });
+    }, requestOrigin);
   } catch (error) {
     if (error instanceof ZodError) {
       sendJson(response, 400, {
         error: 'Validation failed',
         issues: error.issues,
-      });
+      }, request.headers.origin);
       return;
     }
 
     if (error instanceof Error && error.name === 'SyntaxError') {
       sendJson(response, 400, {
         error: 'Invalid JSON payload',
-      });
+      }, request.headers.origin);
       return;
     }
 
     const message = error instanceof Error ? error.message : 'Unexpected server error';
     sendJson(response, 500, {
       error: message,
-    });
+    }, request.headers.origin);
   }
 });
 

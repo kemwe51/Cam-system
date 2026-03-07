@@ -95,6 +95,9 @@ const featureKindOrder = [
   'engraving',
 ] as const;
 
+const narrowMillingWidthThresholdMm = 8;
+const narrowSlotWidthThresholdMm = 6;
+
 function highestRisk(risks: Risk[]): RiskLevel {
   if (risks.some((risk) => risk.level === 'high')) {
     return 'high';
@@ -231,9 +234,11 @@ function selectTool(feature: NormalizedFeature): Tool {
       return faceMillTool;
     case 'contour':
     case 'pocket':
-      return feature.widthMm > 0 && feature.widthMm <= 8 ? flatEndMill6Tool : flatEndMill10Tool;
+      return feature.widthMm > 0 && feature.widthMm <= narrowMillingWidthThresholdMm
+        ? flatEndMill6Tool
+        : flatEndMill10Tool;
     case 'slot':
-      return feature.widthMm <= 6 ? flatEndMill6Tool : flatEndMill10Tool;
+      return feature.widthMm <= narrowSlotWidthThresholdMm ? flatEndMill6Tool : flatEndMill10Tool;
     case 'hole_group':
       return feature.lengthMm <= 3.5 ? drill3Tool : drill6Tool;
     case 'chamfer':
@@ -260,7 +265,7 @@ function featureRisks(feature: NormalizedFeature, part: PartInput): Risk[] {
     });
   }
 
-  if (feature.kind === 'slot' && feature.widthMm < 6) {
+  if (feature.kind === 'slot' && feature.widthMm < narrowSlotWidthThresholdMm) {
     risks.push({
       id: `${feature.id}-risk-width`,
       level: 'medium',
