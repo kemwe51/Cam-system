@@ -1,10 +1,17 @@
 import { createServer } from 'node:http';
 import { reviewDraftPlan } from '@cam/ai';
 import { approvePlan, planPart, samplePartInput } from '@cam/engine';
-import { approvalRequestSchema, partInputSchema, reviewRequestSchema } from '@cam/shared';
+import {
+  approvalRequestSchema,
+  partInputSchema,
+  projectDraftSchema,
+  reviewRequestSchema,
+} from '@cam/shared';
 import { ZodError } from 'zod';
+import { createJsonDraftStore } from './draft-store.js';
 
 const port = Number(process.env.PORT ?? 3001);
+const draftStore = createJsonDraftStore();
 
 if (process.env.NODE_ENV === 'production' && !process.env.CAM_WEB_ORIGIN) {
   throw new Error('CAM_WEB_ORIGIN must be set when NODE_ENV=production.');
@@ -27,12 +34,17 @@ function corsHeaders(requestOrigin?: string): Record<string, string> {
       ? [...allowedOrigins][0] ?? ''
       : '';
 
-  return {
-    ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    Vary: 'Origin',
-  };
+    return {
+      ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS',
+      Vary: 'Origin',
+    };
+}
+
+function matchDraftRoute(pathname: string): string | null {
+  const match = /^\/drafts\/([^/]+)$/.exec(pathname);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 function sendJson(
@@ -97,6 +109,21 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const draftProjectId = matchDraftRoute(url.pathname);
+    if (request.method === 'GET' && draftProjectId) {
+      const draft = await draftStore.load(draftProjectId);
+      if (!draft) {
+        sendJson(response, 404, {
+          error: 'Draft not found',
+          projectId: draftProjectId,
+        }, requestOrigin);
+        return;
+      }
+
+      sendJson(response, 200, draft, requestOrigin);
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/plan') {
       const body = partInputSchema.parse(await readJson(request));
       sendJson(response, 200, planPart(body), requestOrigin);
@@ -119,6 +146,20 @@ const server = createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/approve') {
       const body = approvalRequestSchema.parse(await readJson(request));
       sendJson(response, 200, approvePlan(body), requestOrigin);
+      return;
+    }
+
+    if (request.method === 'PUT' && draftProjectId) {
+      const body = projectDraftSchema.parse(await readJson(request));
+      if (body.projectId !== draftProjectId) {
+        sendJson(response, 400, {
+          error: 'Draft project id does not match request path',
+          projectId: draftProjectId,
+        }, requestOrigin);
+        return;
+      }
+
+      sendJson(response, 200, await draftStore.save(draftProjectId, body), requestOrigin);
       return;
     }
 

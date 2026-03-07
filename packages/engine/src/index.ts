@@ -314,7 +314,8 @@ export function planPart(input: PartInput): DraftCamPlan {
   const toolsById = new Map<string, Tool>();
   const risks: Risk[] = [];
 
-  const operations = features.flatMap((feature, index) => {
+  const operations = features
+    .flatMap((feature, index) => {
     const tool = selectTool(feature);
     toolsById.set(tool.id, tool);
     risks.push(...featureRisks(feature, part));
@@ -332,6 +333,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Face stock to establish Z datum.',
             estimatedMinutes: operationMinutes(feature.areaMm2 / 1800),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
       case 'contour':
@@ -346,6 +350,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: '2D contour with leave-on-finish stock for final wall cleanup.',
             estimatedMinutes: operationMinutes(feature.lengthMm / 110),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
       case 'pocket':
@@ -360,6 +367,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Adaptive roughing with conservative step-down.',
             estimatedMinutes: operationMinutes((feature.areaMm2 * Math.max(feature.depthMm, 1)) / 9000),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
           {
             id: `op-${index + 1}-pocket-finish`,
@@ -371,6 +381,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Finish floor and walls after roughing.',
             estimatedMinutes: operationMinutes((feature.lengthMm + feature.widthMm) / 80),
+            enabled: true,
+            origin: 'automatic',
+            order: index + 1,
           },
         ];
       case 'slot':
@@ -385,6 +398,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Centerline slotting with multiple depth passes.',
             estimatedMinutes: operationMinutes((feature.lengthMm * feature.depthMm) / 180),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
       case 'hole_group':
@@ -399,6 +415,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Spot as needed and drill all holes in one grouped cycle.',
             estimatedMinutes: operationMinutes((feature.quantity * feature.depthMm) / 35),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
       case 'chamfer':
@@ -413,6 +432,9 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Break exposed edges only; no implicit deburr on hidden edges.',
             estimatedMinutes: operationMinutes(feature.lengthMm / 240),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
       case 'engraving':
@@ -427,10 +449,17 @@ export function planPart(input: PartInput): DraftCamPlan {
             setup: 'Setup 1 / Top side',
             strategy: 'Single-line marking only; no filled engraving or embossing.',
             estimatedMinutes: operationMinutes(feature.lengthMm / 90),
+            enabled: true,
+            origin: 'automatic',
+            order: index,
           },
         ];
     }
-  });
+    })
+    .map((operation, index) => ({
+      ...operation,
+      order: index,
+    }));
 
   const checklist = [
     {
