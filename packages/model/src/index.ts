@@ -248,6 +248,7 @@ export const nativeWorkbenchNodeSchema = z.object({
   label: z.string().min(1),
   parentId: z.string().min(1).optional(),
   status: z.enum(['ready', 'warning', 'placeholder']).default('ready'),
+  visibility: z.enum(['visible', 'hidden', 'isolated']).default('visible'),
   entityId: z.string().min(1).optional(),
   featureId: z.string().min(1).optional(),
   operationId: z.string().min(1).optional(),
@@ -258,6 +259,18 @@ export const nativeWorkbenchNodeSchema = z.object({
 });
 export type NativeWorkbenchNode = z.infer<typeof nativeWorkbenchNodeSchema>;
 
+export const nativeWorkbenchTopologyRefSchema = z.object({
+  id: z.string().min(1),
+  system: z.enum(['occt_xde', 'source_geometry', 'derived_feature_hint']),
+  entityType: z.enum(['assembly', 'part', 'solid', 'face', 'edge', 'vertex', 'wire', 'source_geometry']),
+  persistentId: z.string().min(1),
+  label: z.string().min(1).optional(),
+});
+export type NativeWorkbenchTopologyRef = z.infer<typeof nativeWorkbenchTopologyRefSchema>;
+
+export const nativeWorkbenchLinkResolutionSchema = z.enum(['resolved', 'partial', 'unresolved']);
+export type NativeWorkbenchLinkResolution = z.infer<typeof nativeWorkbenchLinkResolutionSchema>;
+
 export const nativeWorkbenchSelectionLinkSchema = z.object({
   id: z.string().min(1),
   syncChannels: z.array(z.enum(['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector', 'warnings'])).default([]),
@@ -267,8 +280,34 @@ export const nativeWorkbenchSelectionLinkSchema = z.object({
   toolNodeId: z.string().min(1).optional(),
   previewNodeId: z.string().min(1).optional(),
   sourceGeometryIds: z.array(z.string().min(1)).default([]),
+  topologyRefs: z.array(nativeWorkbenchTopologyRefSchema).default([]),
+  resolution: nativeWorkbenchLinkResolutionSchema.default('resolved'),
+  warnings: z.array(z.string()).default([]),
 });
 export type NativeWorkbenchSelectionLink = z.infer<typeof nativeWorkbenchSelectionLinkSchema>;
+
+export const nativeWorkbenchLinkMappingSchema = z.object({
+  id: z.string().min(1),
+  entityId: z.string().min(1).optional(),
+  featureId: z.string().min(1).optional(),
+  operationId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  previewId: z.string().min(1).optional(),
+  sourceGeometryIds: z.array(z.string().min(1)).default([]),
+  topologyRefs: z.array(nativeWorkbenchTopologyRefSchema).default([]),
+  resolution: nativeWorkbenchLinkResolutionSchema,
+  warnings: z.array(z.string()).default([]),
+});
+export type NativeWorkbenchLinkMapping = z.infer<typeof nativeWorkbenchLinkMappingSchema>;
+
+export const nativeWorkbenchDisplayLayerSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.enum(['model_geometry', 'selection', 'feature_overlay', 'operation_overlay', 'path_plan', 'inspection']),
+  visible: z.boolean().default(true),
+  status: z.enum(['ready', 'warning', 'placeholder']).default('ready'),
+});
+export type NativeWorkbenchDisplayLayer = z.infer<typeof nativeWorkbenchDisplayLayerSchema>;
 
 export const nativeWorkbenchSnapshotSchema = z.object({
   schemaVersion: z.literal('native-workbench-v1'),
@@ -282,6 +321,8 @@ export const nativeWorkbenchSnapshotSchema = z.object({
   warnings: z.array(z.string()).default([]),
   nodes: z.array(nativeWorkbenchNodeSchema),
   selectionLinks: z.array(nativeWorkbenchSelectionLinkSchema),
+  linkMappings: z.array(nativeWorkbenchLinkMappingSchema).default([]),
+  displayLayers: z.array(nativeWorkbenchDisplayLayerSchema).default([]),
   metadata: z.object({
     featureCount: z.number().int().nonnegative(),
     extractedFeatureCount: z.number().int().nonnegative(),
@@ -289,6 +330,9 @@ export const nativeWorkbenchSnapshotSchema = z.object({
     toolCount: z.number().int().nonnegative(),
     previewCount: z.number().int().nonnegative(),
     hasPlaceholderModel: z.boolean(),
+    resolvedLinkCount: z.number().int().nonnegative(),
+    partialLinkCount: z.number().int().nonnegative(),
+    unresolvedLinkCount: z.number().int().nonnegative(),
   }),
 });
 export type NativeWorkbenchSnapshot = z.infer<typeof nativeWorkbenchSnapshotSchema>;
@@ -307,6 +351,48 @@ function sanitizeId(value: string): string {
 
 function featureStableId(kind: string, index: number, sourceId?: string): string {
   return sourceId ?? `${kind}-${index + 1}`;
+}
+
+function nativeDisplayLayerKind(layerKind: ModelLayer['kind']): NativeWorkbenchDisplayLayer['kind'] {
+  switch (layerKind) {
+    case 'selection':
+      return 'selection';
+    case 'features':
+    case 'inferred_features':
+      return 'feature_overlay';
+    case 'operation_preview':
+      return 'path_plan';
+    case 'source':
+    case 'stock':
+    case 'imported_geometry':
+      return 'model_geometry';
+  }
+}
+
+function sourceGeometryTopologyRefs(sourceGeometryIds: string[]): NativeWorkbenchTopologyRef[] {
+  return sourceGeometryIds.map((sourceGeometryId, index) => nativeWorkbenchTopologyRefSchema.parse({
+    id: `topology-source-${sanitizeId(sourceGeometryId)}-${index + 1}`,
+    system: 'source_geometry',
+    entityType: 'source_geometry',
+    persistentId: sourceGeometryId,
+    label: sourceGeometryId,
+  }));
+}
+
+function linkResolution(values: {
+  entityNodeId: string | undefined;
+  featureNodeId: string | undefined;
+  operationNodeId: string | undefined;
+  toolNodeId: string | undefined;
+  previewNodeId: string | undefined;
+}): NativeWorkbenchLinkResolution {
+  if (values.operationNodeId && values.toolNodeId && values.featureNodeId && (values.entityNodeId || values.previewNodeId)) {
+    return 'resolved';
+  }
+  if (values.operationNodeId && (values.toolNodeId || values.featureNodeId || values.entityNodeId || values.previewNodeId)) {
+    return 'partial';
+  }
+  return 'unresolved';
 }
 
 function featureMetadata(source: Pick<
@@ -1101,6 +1187,29 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
   const catalog = plan.toolLibrary.tools.length > 0 ? plan.toolLibrary.tools : plan.tools;
   const usedToolIds = new Set(plan.operations.map((operation) => operation.toolId));
   const usedTools = catalog.filter((tool) => usedToolIds.has(tool.id));
+  const displayLayers = [
+    ...(project.derivedModel?.view.layers.map((layer) => nativeWorkbenchDisplayLayerSchema.parse({
+      id: layer.id,
+      label: layer.label,
+      kind: nativeDisplayLayerKind(layer.kind),
+      visible: layer.visible,
+      status: layer.kind === 'operation_preview' && operationPreviews.length === 0 ? 'placeholder' : 'ready',
+    })) ?? []),
+    nativeWorkbenchDisplayLayerSchema.parse({
+      id: 'native-inspection',
+      label: 'Inspector and checklist',
+      kind: 'inspection',
+      visible: true,
+      status: project.warnings.length > 0 ? 'warning' : 'ready',
+    }),
+    nativeWorkbenchDisplayLayerSchema.parse({
+      id: 'native-operations',
+      label: 'Operation overlays',
+      kind: 'operation_overlay',
+      visible: true,
+      status: plan.operations.length > 0 ? 'ready' : 'placeholder',
+    }),
+  ];
 
   const nodes: NativeWorkbenchNode[] = [
     nativeWorkbenchNodeSchema.parse({
@@ -1163,6 +1272,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       status: model?.status === 'placeholder' ? 'placeholder' : 'ready',
       metadata: {
         sourceType: project.sourceType ?? 'json',
+        bridgeRole: 'native-workbench-consumer',
       },
     }));
   }
@@ -1183,6 +1293,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       metadata: {
         layerId: entity.layerId,
         entityKind: entity.kind,
+        topologyState: project.sourceType === 'step' ? 'awaiting_occt_topology_link' : 'linked_to_derived_geometry',
       },
     }));
   }
@@ -1203,6 +1314,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
         inferenceMethod: extractedFeature.inferenceMethod,
         kind: extractedFeature.kind,
         classificationState: extractedFeature.classificationState,
+        topologyLinkState: extractedFeature.sourceGeometryRefs.length > 0 ? 'source_geometry_linked' : 'unresolved',
       },
     }));
   }
@@ -1225,6 +1337,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
         kind: operation.kind,
         source: operation.source,
         setupId: operation.setupId,
+        pathDisplayLayerId: 'native-operations',
       },
     }));
   }
@@ -1263,24 +1376,64 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       metadata: {
         kind: preview.kind,
         pathPreviewMode: preview.pathPreviewMode,
+        displayLayerId: 'layer-operation-preview',
       },
     }));
   }
 
-  const selectionLinks: NativeWorkbenchSelectionLink[] = plan.operations.map((operation) => {
+  const linkMappings: NativeWorkbenchLinkMapping[] = plan.operations.map((operation) => {
     const featureLink = featureLinksByFeatureId.get(operation.featureId);
     const preview = previewByOperationId.get(operation.id);
-    return nativeWorkbenchSelectionLinkSchema.parse({
-      id: `selection-link-${sanitizeId(operation.id)}`,
-      syncChannels: ['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector'],
-      ...(featureLink?.entityId ? { modelEntityNodeId: entityNodeIds.get(featureLink.entityId) } : {}),
-      ...(featureNodeIds.has(operation.featureId) ? { featureNodeId: featureNodeIds.get(operation.featureId) } : {}),
-      ...(operationNodeIds.has(operation.id) ? { operationNodeId: operationNodeIds.get(operation.id) } : {}),
-      ...(toolNodeIds.has(operation.toolId) ? { toolNodeId: toolNodeIds.get(operation.toolId) } : {}),
-      ...(preview ? { previewNodeId: previewNodeIds.get(operation.id) } : {}),
+    const sourceGeometryIds = featureLink?.sourceGeometryIds ?? [];
+    const topologyRefs = sourceGeometryTopologyRefs(sourceGeometryIds);
+    const resolution = linkResolution({
+      entityNodeId: featureLink?.entityId ? entityNodeIds.get(featureLink.entityId) : undefined,
+      featureNodeId: featureNodeIds.get(operation.featureId),
+      operationNodeId: operationNodeIds.get(operation.id),
+      toolNodeId: toolNodeIds.get(operation.toolId),
+      previewNodeId: preview ? previewNodeIds.get(operation.id) : undefined,
+    });
+    const warnings = [
+      ...(featureLink ? [] : [`Operation ${operation.name} has no model-entity link yet.`]),
+      ...(featureNodeIds.has(operation.featureId) ? [] : [`Operation ${operation.name} is not linked to an extracted feature node.`]),
+      ...(toolNodeIds.has(operation.toolId) ? [] : [`Operation ${operation.name} references a tool that is not present in the native workbench tree.`]),
+      ...(project.sourceType === 'step' && topologyRefs.length === 0 ? [`STEP topology for ${operation.name} is not linked yet. Native STEP/XDE selection remains a local OCCT follow-up.`] : []),
+    ];
+
+    return nativeWorkbenchLinkMappingSchema.parse({
+      id: `link-mapping-${sanitizeId(operation.id)}`,
+      ...(featureLink?.entityId ? { entityId: featureLink.entityId } : {}),
+      ...(operation.featureId ? { featureId: operation.featureId } : {}),
+      operationId: operation.id,
+      toolId: operation.toolId,
+      ...(preview ? { previewId: preview.id } : {}),
       sourceGeometryIds: featureLink?.sourceGeometryIds ?? [],
+      topologyRefs,
+      resolution,
+      warnings,
     });
   });
+
+  const selectionLinks: NativeWorkbenchSelectionLink[] = linkMappings.map((mapping) => {
+    const warnings = [...mapping.warnings];
+    return nativeWorkbenchSelectionLinkSchema.parse({
+      id: `selection-link-${sanitizeId(mapping.operationId ?? mapping.id)}`,
+      syncChannels: ['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector'],
+      ...(mapping.entityId ? { modelEntityNodeId: entityNodeIds.get(mapping.entityId) } : {}),
+      ...(mapping.featureId ? { featureNodeId: featureNodeIds.get(mapping.featureId) } : {}),
+      ...(mapping.operationId ? { operationNodeId: operationNodeIds.get(mapping.operationId) } : {}),
+      ...(mapping.toolId ? { toolNodeId: toolNodeIds.get(mapping.toolId) } : {}),
+      ...(mapping.previewId && mapping.operationId ? { previewNodeId: previewNodeIds.get(mapping.operationId) } : {}),
+      sourceGeometryIds: mapping.sourceGeometryIds,
+      topologyRefs: mapping.topologyRefs,
+      resolution: mapping.resolution,
+      warnings,
+    });
+  });
+  const resolvedLinkCount = linkMappings.filter((mapping) => mapping.resolution === 'resolved').length;
+  const partialLinkCount = linkMappings.filter((mapping) => mapping.resolution === 'partial').length;
+  const unresolvedLinkCount = linkMappings.filter((mapping) => mapping.resolution === 'unresolved').length;
+  const linkageWarnings = linkMappings.flatMap((mapping) => mapping.warnings);
 
   return nativeWorkbenchSnapshotSchema.parse({
     schemaVersion: 'native-workbench-v1',
@@ -1291,9 +1444,11 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
     sourceImportId: project.sourceImportId,
     importedModelId: project.derivedModel?.id,
     view: project.derivedModel?.view,
-    warnings: [...project.warnings, ...(model?.warnings ?? [])],
+    warnings: [...project.warnings, ...(model?.warnings ?? []), ...linkageWarnings],
     nodes,
     selectionLinks,
+    linkMappings,
+    displayLayers,
     metadata: {
       featureCount: plan.features.length,
       extractedFeatureCount: model?.extractedFeatures.length ?? 0,
@@ -1301,6 +1456,9 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       toolCount: usedTools.length,
       previewCount: operationPreviews.length,
       hasPlaceholderModel: model?.status === 'placeholder',
+      resolvedLinkCount,
+      partialLinkCount,
+      unresolvedLinkCount,
     },
   });
 }

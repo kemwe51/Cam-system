@@ -12,6 +12,7 @@ public:
   static void save(WorkbenchProjectDocument& document, const QString& filePath);
   static QString promptOpenProject(QWidget* parent);
   static QString promptSaveProject(QWidget* parent, const QString& currentPath = {});
+  static QString promptOpenBridgeSnapshot(QWidget* parent, const QString& currentPath = {});
   static QString promptImportStep(QWidget* parent);
   static QString promptImportDxf(QWidget* parent);
 };
