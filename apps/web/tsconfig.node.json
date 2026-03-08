@@ -6,6 +6,7 @@
     "lib": ["ES2023"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "customConditions": ["source"],
     "types": ["node"],
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,

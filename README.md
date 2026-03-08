@@ -22,8 +22,8 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - generated/manual/edited operation source tracking with freeze-for-regeneration support
   - planning warnings, machining assumptions, tool-class selection reasons, linked preview metadata, and foundational depth metadata carried with operations
 - **Source-first workspace resolution for local work**
-  - workspace libraries now expose a `source` condition for local dev/test while keeping `dist/` as the default production build boundary
-  - Vitest and Vite resolve `@cam/*` libraries to `src/index.ts` during local test/dev flows
+  - workspace libraries now expose a `source` condition for local app/test work while keeping `dist/` outputs for package builds and packaged consumers
+  - the web app resolves `@cam/*` libraries to `src/index.ts` in Vite dev, Vitest, `tsc -b`, and `vite build`, so `npm run build --workspace @cam/web` works from a clean checkout
   - API `tsx` dev runtime uses Node `--conditions=source`, so sibling package `dist/` artifacts are no longer a hidden prerequisite
 - **2.5D depth foundation**
   - shared schemas now include `SetupPlane`, `ZReference`, `DepthRange`, `MachiningLevel`, `FeatureDepthModel`, `OperationDepthProfile`, `StockTop`, `FloorLevel`, `PassDepthHint`, `SafeClearance`, `DepthAssumption`, and `DepthWarning`
@@ -121,10 +121,11 @@ Local development and tests are now **source-first**:
 
 - workspace libraries publish `dist/` by default for production-style builds
 - the same libraries expose a `source` export condition pointing at `src/index.ts`
-- shared `vitest.workspace.ts` aliases plus Vite `resolve.conditions` send local tests and Vite dev to source entries
+- shared `vitest.workspace.ts` aliases plus the web Vite config send local tests and web dev/build to source entries
+- `apps/web/tsconfig.app.json` and `apps/web/tsconfig.node.json` set `customConditions: ["source"]`, so `tsc -b` follows the same workspace package resolution strategy as Vite
 - API dev uses `NODE_OPTIONS=--conditions=source` so `tsx` resolves sibling libraries from source instead of built `dist/`
 
-Production builds still use dedicated `tsconfig.build.json` files and emitted `dist/` output. Test files remain excluded from emitted build artifacts.
+Package/library production builds still use dedicated `tsconfig.build.json` files and emitted `dist/` output. The web app bundles sibling workspace sources directly, while test files remain excluded from emitted build artifacts.
 
 Run the API from a clean checkout:
 
@@ -151,14 +152,14 @@ The web app defaults to `http://localhost:3001` for API requests.
 - Install from the monorepo root with `npm install` for local development or `npm ci` for CI/repro checks.
 - Runtime workspace dependencies must be declared in the owning workspace package, even when another workspace already brings in the same package transitively.
 - Test-only imports such as `vitest` are declared in the workspace that owns the tests instead of relying on the root package to hoist them.
-- Root scripts keep the build order explicit: shared libraries build first, then the API and web apps consume their published `dist/` exports.
+- Root scripts keep package build order explicit: shared libraries build first, then the API build consumes their published `dist/` exports while the web app remains source-first.
 - `npm run verify` mirrors the CI guard after install by running the full root build plus workspace tests.
 
 ### Root workspace scripts
 
 ```bash
 npm run build:packages   # build shared workspace libraries only
-npm run build            # build libraries, then api and web using dist output
+npm run build            # build libraries, then api and web; web build no longer depends on sibling dist artifacts
 npm run verify           # build everything, then run workspace tests
 npm run test             # run all workspace tests source-first without prebuilding sibling dist
 npm run test:workspaces  # run workspace tests without any build pre-step
@@ -168,10 +169,11 @@ npm run dev:web          # start Vite web dev server source-first from a clean c
 
 Resolution strategy summary:
 
-- Production build/publish flow stays `dist`-first through package `main` / default `exports`.
-- Local dev/test flows are source-first and do not require manual prebuilding of sibling workspace libraries.
+- Package build/publish flow stays `dist`-first through package `main` / default `exports`.
+- The web app is source-first in dev, test, `tsc -b`, and `vite build` by combining workspace `source` exports, Vite aliases/conditions, and TypeScript `customConditions`.
+- API dev/test flows are source-first and do not require manual prebuilding of sibling workspace libraries.
 - Vitest executes workspace tests from source entries; production builds still do not emit `*.test.*` artifacts.
-- `npm run build` remains the explicit command that refreshes package `dist/` outputs for packaged consumers.
+- `npm run build --workspace @cam/web` is green from a clean checkout, while `npm run build` still refreshes package `dist/` outputs for packaged consumers.
 - Vite and TypeScript cache folders such as `.vite`, `.vite-temp`, and `node_modules/.tmp` are transient and ignored from version control.
 
 For production-style API deployment, set `CAM_WEB_ORIGIN` explicitly so the API only accepts the intended web origin.
