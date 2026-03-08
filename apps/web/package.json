@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run src/workbenchReducer.test.ts"
+    "test": "vitest run src/workbenchReducer.test.ts src/viewportScene.test.ts"
   },
   "dependencies": {
+    "@cam/model": "file:../../packages/model",
     "@cam/shared": "file:../../packages/shared",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",

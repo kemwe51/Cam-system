@@ -1,19 +1,48 @@
+import { type ImportedModel, type ImportSessionRecord, type ProjectRecord } from '@cam/model';
 import { camReviewSchema, type CamReview, type DraftCamPlan, type Operation } from '@cam/shared';
+
+export type ReviewSupplementalContext = {
+  importSession?: Pick<ImportSessionRecord, 'id' | 'importStatus' | 'warnings' | 'source'>;
+  model?: ImportedModel;
+  project?: Pick<ProjectRecord, 'projectId' | 'revision' | 'warnings' | 'sourceImportId' | 'sourceFilename' | 'sourceType'>;
+};
 
 type ReviewOptions = {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   model?: string;
+  context?: ReviewSupplementalContext;
 };
 
 type ReviewContext = {
   plan: DraftCamPlan;
+  importSource: ReviewSupplementalContext['importSession'];
+  modelContext: {
+    status?: ImportedModel['status'];
+    warnings: string[];
+    sourceGeometryMetadata: string[];
+    entityCount?: number;
+    featureLinkCount?: number;
+  };
+  projectContext: {
+    projectId?: string;
+    revision?: number;
+    sourceImportId?: string;
+    sourceFilename?: string;
+    sourceType?: string;
+    warnings: string[];
+  };
   currentDraftState: {
     approvalState: DraftCamPlan['approval']['state'];
     estimatedCycleTimeMinutes: number;
     manualOperationCount: number;
     disabledOperationCount: number;
     modifiedOperationCount: number;
+  };
+  warningBuckets: {
+    modelSourceWarnings: string[];
+    planningWarnings: string[];
+    manualOverrideNotes: string[];
   };
   manualOverrides: Array<{
     id: string;
@@ -30,7 +59,7 @@ type ReviewContext = {
   }>;
 };
 
-function reviewContext(plan: DraftCamPlan): ReviewContext {
+function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = {}): ReviewContext {
   const manualOverrides = plan.operations
     .filter((operation) => operation.origin === 'manual' || !operation.enabled || operation.isDirty)
     .map((operation) => ({
@@ -49,6 +78,24 @@ function reviewContext(plan: DraftCamPlan): ReviewContext {
 
   return {
     plan,
+    importSource: context.importSession,
+    modelContext: {
+      ...(context.model?.status ? { status: context.model.status } : {}),
+      warnings: context.model?.warnings ?? [],
+      sourceGeometryMetadata: context.model?.sourceGeometryMetadata ?? [],
+      ...(typeof context.model?.entities.length === 'number' ? { entityCount: context.model.entities.length } : {}),
+      ...(typeof context.model?.featureGeometryLinks.length === 'number'
+        ? { featureLinkCount: context.model.featureGeometryLinks.length }
+        : {}),
+    },
+    projectContext: {
+      ...(context.project?.projectId ? { projectId: context.project.projectId } : {}),
+      ...(typeof context.project?.revision === 'number' ? { revision: context.project.revision } : {}),
+      ...(context.project?.sourceImportId ? { sourceImportId: context.project.sourceImportId } : {}),
+      ...(context.project?.sourceFilename ? { sourceFilename: context.project.sourceFilename } : {}),
+      ...(context.project?.sourceType ? { sourceType: context.project.sourceType } : {}),
+      warnings: context.project?.warnings ?? [],
+    },
     currentDraftState: {
       approvalState: plan.approval.state,
       estimatedCycleTimeMinutes: plan.estimatedCycleTimeMinutes,
@@ -56,12 +103,18 @@ function reviewContext(plan: DraftCamPlan): ReviewContext {
       disabledOperationCount: plan.operations.filter((operation) => !operation.enabled).length,
       modifiedOperationCount: plan.operations.filter((operation) => operation.isDirty).length,
     },
+    warningBuckets: {
+      modelSourceWarnings: [...(context.importSession?.warnings ?? []), ...(context.model?.warnings ?? [])],
+      planningWarnings: plan.risks.map((risk) => `${risk.level.toUpperCase()}: ${risk.title}`),
+      manualOverrideNotes: manualOverrides.flatMap((operation) => [operation.notes, operation.strategy].filter(Boolean)),
+    },
     manualOverrides,
   };
 }
 
-function heuristicReview(plan: DraftCamPlan): CamReview {
-  const riskFlags = plan.risks.map((risk) => `${risk.level.toUpperCase()}: ${risk.title}`);
+function heuristicReview(plan: DraftCamPlan, context: ReviewSupplementalContext = {}): CamReview {
+  const reviewData = reviewContext(plan, context);
+  const riskFlags = [...reviewData.warningBuckets.modelSourceWarnings, ...reviewData.warningBuckets.planningWarnings];
   const missingOperations: string[] = [];
   const suggestedEdits: string[] = [];
 
@@ -89,6 +142,14 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
     suggestedEdits.push('Modified operations are unsaved draft overrides and should be re-reviewed before approval.');
   }
 
+  if (context.model?.status === 'placeholder') {
+    suggestedEdits.push('Imported model is still a placeholder session. Do not treat DXF/STEP source metadata as machinable geometry.');
+  }
+
+  if (context.project?.revision) {
+    suggestedEdits.push(`Project revision ${context.project.revision} contains manual planning history. Review changes before approval.`);
+  }
+
   return camReviewSchema.parse({
     mode: 'stub',
     missingOperations,
@@ -96,8 +157,8 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
     suggestedEdits,
     overallAssessment:
       riskFlags.length > 0
-        ? 'Draft plan is plausible, but the highlighted risks and manual overrides should be reviewed by an NC programmer before approval.'
-        : 'Draft plan looks consistent with the structured part input. Human approval is still required before release.',
+        ? 'Draft plan is plausible, but the highlighted source/model warnings, planning risks, and manual overrides should be reviewed by an NC programmer before approval.'
+        : 'Draft plan looks consistent with the structured part input and current model metadata. Human approval is still required before release.',
     approvalRecommendation: riskFlags.length > 0 || plan.operations.some((operation) => operation.isDirty) ? 'hold' : 'review',
     fallbackUsed: true,
   });
@@ -144,7 +205,7 @@ function extractOutputText(payload: unknown): string | undefined {
 }
 
 export async function reviewDraftPlan(plan: DraftCamPlan, options: ReviewOptions = {}): Promise<CamReview> {
-  const fallback = heuristicReview(plan);
+  const fallback = heuristicReview(plan, options.context);
   const apiKey = options.apiKey?.trim();
 
   if (!apiKey) {
@@ -167,9 +228,10 @@ export async function reviewDraftPlan(plan: DraftCamPlan, options: ReviewOptions
       fallbackUsed: false,
     }),
     'Do not invent geometry, do not output G-code, and do not override deterministic facts.',
+    'Model/source warnings, planning warnings, manual override notes, and approval recommendation must remain clearly separated in your reasoning.',
     'Manual operations, disabled operations, and user-edited strategy text are draft overrides that must be reviewed but never treated as authoritative geometry.',
-    'The payload below includes current draft state and manual overrides.',
-    JSON.stringify(reviewContext(plan)),
+    'The payload below includes current draft state, model/source metadata, revision metadata, and manual overrides.',
+    JSON.stringify(reviewContext(plan, options.context)),
   ].join('\n\n');
 
   try {

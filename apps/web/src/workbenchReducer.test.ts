@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { planPart, samplePartInput } from '@cam/engine';
-import { initialWorkbenchState, buildProjectDraft, workbenchReducer } from './workbenchReducer.js';
+import { createModelSource, deriveImportedModelFromPart } from '@cam/model';
+import { initialWorkbenchState, buildProjectRecord, workbenchReducer } from './workbenchReducer.js';
 
 function stateWithPlan() {
   const plan = planPart(samplePartInput);
@@ -73,7 +74,7 @@ describe('workbenchReducer', () => {
     expect(deleted.draftPlan?.operations.filter((operation) => operation.origin === 'manual')).toHaveLength(1);
   });
 
-  it('builds project drafts and clears per-operation dirty state after save/load', () => {
+  it('builds project records and clears per-operation dirty state after save/load', () => {
     const state = stateWithPlan();
     const edited = workbenchReducer(state, {
       type: 'updateOperation',
@@ -82,18 +83,51 @@ describe('workbenchReducer', () => {
       message: 'edit',
     });
 
-    const projectDraft = buildProjectDraft(edited);
-    expect(projectDraft?.metadata?.partId).toBe(samplePartInput.partId);
-    expect(projectDraft?.plan.operations[0]?.isDirty).toBe(false);
+    const projectRecord = buildProjectRecord(edited);
+    expect(projectRecord?.plan.part.partId).toBe(samplePartInput.partId);
+    expect(projectRecord?.plan.operations[0]?.isDirty).toBe(false);
 
     const loaded = workbenchReducer(edited, {
       type: 'projectLoaded',
-      project: projectDraft!,
+      project: projectRecord!,
       message: 'load',
     });
 
     expect(loaded.dirty).toBe(false);
-    expect(loaded.lastSavedAt).toBe(projectDraft?.savedAt ?? null);
+    expect(loaded.lastSavedAt).toBe(projectRecord?.updatedAt ?? null);
     expect(loaded.draftPlan?.operations.every((operation) => operation.isDirty === false)).toBe(true);
+  });
+
+  it('tracks import session and preserves source metadata in project records', () => {
+    const source = createModelSource({
+      id: 'import-json-sample',
+      type: 'json',
+      filename: 'sample.json',
+      mediaType: 'application/json',
+    });
+    const importSessionState = workbenchReducer(initialWorkbenchState, {
+      type: 'importSessionLoaded',
+      importSession: {
+        id: 'import-json-sample',
+        source,
+        importStatus: 'success',
+        warnings: ['Structured JSON import succeeded.'],
+        importedModel: deriveImportedModelFromPart(source, samplePartInput),
+        deterministicPartInput: samplePartInput,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      message: 'imported',
+    });
+    const planned = workbenchReducer(importSessionState, {
+      type: 'planLoaded',
+      plan: planPart(samplePartInput),
+      message: 'planned',
+    });
+
+    const record = buildProjectRecord(planned);
+    expect(record?.sourceType).toBe('json');
+    expect(record?.sourceFilename).toBe('sample.json');
+    expect(record?.sourceImportId).toBe('import-json-sample');
   });
 });

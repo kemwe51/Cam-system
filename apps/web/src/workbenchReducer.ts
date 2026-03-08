@@ -1,15 +1,18 @@
 import {
+  buildPlanMetadata,
+  type ImportSessionRecord,
+  type ImportedModel,
+  type ProjectRecord,
+} from '@cam/model';
+import {
   buildOperationGroupId,
   buildOperationGroups,
-  buildProjectMetadata,
   getSetupLabel,
   type CamReview,
   type DraftCamPlan,
   type NormalizedFeature,
   type Operation,
   type PartInput,
-  type ProjectDraft,
-  type ProjectSummary,
   type SelectedEntity,
   type Tool,
 } from '@cam/shared';
@@ -22,17 +25,23 @@ export type WorkbenchState = {
   dirty: boolean;
   consoleMessages: string[];
   lastSavedAt: string | null;
-  projects: ProjectSummary[];
+  projects: ProjectRecord[];
+  currentProject: ProjectRecord | null;
+  currentImportSession: ImportSessionRecord | null;
+  currentModel: ImportedModel | null;
+  history: DraftCamPlan[];
+  future: DraftCamPlan[];
 };
 
 export type WorkbenchAction =
   | { type: 'sampleLoaded'; sample: PartInput; message: string }
+  | { type: 'importSessionLoaded'; importSession: ImportSessionRecord; message: string }
   | { type: 'planLoaded'; plan: DraftCamPlan; message: string }
   | { type: 'reviewLoaded'; review: CamReview; message: string }
   | { type: 'approvalLoaded'; plan: DraftCamPlan; message: string }
-  | { type: 'projectCatalogLoaded'; projects: ProjectSummary[]; message: string }
-  | { type: 'projectLoaded'; project: ProjectDraft; message: string }
-  | { type: 'projectSaved'; project: ProjectDraft; message: string }
+  | { type: 'projectCatalogLoaded'; projects: ProjectRecord[]; message: string }
+  | { type: 'projectLoaded'; project: ProjectRecord; message: string }
+  | { type: 'projectSaved'; project: ProjectRecord; message: string }
   | { type: 'selectEntity'; entity: SelectedEntity | null }
   | { type: 'updateOperation'; operationId: string; changes: Partial<EditableOperationFields>; message: string }
   | { type: 'moveOperation'; operationId: string; direction: 'up' | 'down'; message: string }
@@ -40,9 +49,11 @@ export type WorkbenchAction =
   | { type: 'addManualOperation'; featureId: string; message: string }
   | { type: 'duplicateOperation'; operationId: string; message: string }
   | { type: 'deleteManualOperation'; operationId: string; message: string }
+  | { type: 'undo'; message: string }
+  | { type: 'redo'; message: string }
   | { type: 'log'; message: string };
 
-type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId'>;
+type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId' | 'featureId'>;
 
 export const initialWorkbenchState: WorkbenchState = {
   sample: null,
@@ -50,9 +61,14 @@ export const initialWorkbenchState: WorkbenchState = {
   review: null,
   selectedEntity: null,
   dirty: false,
-  consoleMessages: ['Workbench ready. Load the sample or a saved project to begin.'],
+  consoleMessages: ['Workbench ready. Start an import session or load a saved project to begin.'],
   lastSavedAt: null,
   projects: [],
+  currentProject: null,
+  currentImportSession: null,
+  currentModel: null,
+  history: [],
+  future: [],
 };
 
 function appendConsole(state: WorkbenchState, message: string): WorkbenchState {
@@ -97,18 +113,28 @@ function derivePlanTools(plan: DraftCamPlan, operations: Operation[]): Tool[] {
   return [...toolIds].map((toolId) => catalogMap.get(toolId)).filter((tool): tool is Tool => Boolean(tool));
 }
 
-function applyDraftEdit(plan: DraftCamPlan, operations: Operation[], note: string): DraftCamPlan {
+function pushHistory(state: WorkbenchState, currentPlan: DraftCamPlan): Pick<WorkbenchState, 'history' | 'future'> {
+  return {
+    history: [...state.history, normalizeSavedPlan(currentPlan)].slice(-30),
+    future: [],
+  };
+}
+
+function applyDraftEdit(state: WorkbenchState, operations: Operation[], note: string): WorkbenchState {
+  if (!state.draftPlan) {
+    return state;
+  }
+
   const nextOperations = operations.map((operation, index) => ({
     ...operation,
     order: index,
   }));
-  const notes = plan.approval.notes.includes(note) ? plan.approval.notes : [...plan.approval.notes, note];
-
-  return {
-    ...plan,
-    operationGroups: buildOperationGroups(nextOperations, plan.features),
+  const notes = state.draftPlan.approval.notes.includes(note) ? state.draftPlan.approval.notes : [...state.draftPlan.approval.notes, note];
+  const nextPlan: DraftCamPlan = {
+    ...state.draftPlan,
+    operationGroups: buildOperationGroups(nextOperations, state.draftPlan.features),
     operations: nextOperations,
-    tools: derivePlanTools(plan, nextOperations),
+    tools: derivePlanTools(state.draftPlan, nextOperations),
     estimatedCycleTimeMinutes: Math.max(sumEnabledMinutes(nextOperations), 0.5),
     approval: {
       state: 'in_review',
@@ -116,11 +142,19 @@ function applyDraftEdit(plan: DraftCamPlan, operations: Operation[], note: strin
       notes,
     },
     summary: {
-      ...plan.summary,
+      ...state.draftPlan.summary,
       operationCount: nextOperations.length,
       enabledOperationCount: nextOperations.filter((operation) => operation.enabled).length,
       manualOperationCount: nextOperations.filter((operation) => operation.origin === 'manual').length,
     },
+  };
+
+  return {
+    ...state,
+    ...pushHistory(state, state.draftPlan),
+    draftPlan: nextPlan,
+    review: null,
+    dirty: true,
   };
 }
 
@@ -203,19 +237,31 @@ export function createProjectId(part: PartInput): string {
   return `${part.partId}-${part.revision}`;
 }
 
-export function buildProjectDraft(state: WorkbenchState): ProjectDraft | null {
+export function buildProjectRecord(state: WorkbenchState): ProjectRecord | null {
   if (!state.draftPlan) {
     return null;
   }
 
-  const savedAt = new Date().toISOString();
+  const updatedAt = new Date().toISOString();
+  const normalizedPlan = normalizeSavedPlan(state.draftPlan);
+  const projectId = createProjectId(normalizedPlan.part);
+  const importWarnings = state.currentImportSession?.warnings ?? [];
+  const modelWarnings = state.currentModel?.warnings ?? [];
   return {
-    projectId: createProjectId(state.draftPlan.part),
-    metadata: buildProjectMetadata(createProjectId(state.draftPlan.part), state.draftPlan, savedAt, false),
-    plan: normalizeSavedPlan(state.draftPlan),
-    ...(state.review ? { review: state.review } : {}),
-    ...(state.selectedEntity ? { selectedEntity: state.selectedEntity } : {}),
-    savedAt,
+    projectId,
+    revision: state.currentProject?.revision ?? 0,
+    sourceImportId: state.currentImportSession?.id,
+    sourceType: state.currentImportSession?.source.type,
+    sourceFilename: state.currentImportSession?.source.filename,
+    derivedModel: state.currentModel ?? undefined,
+    planMetadata: buildPlanMetadata(normalizedPlan),
+    approvalState: normalizedPlan.approval.state,
+    updatedAt,
+    warnings: [...importWarnings, ...modelWarnings],
+    plan: normalizedPlan,
+    review: state.review ?? undefined,
+    selectedEntity: state.selectedEntity ?? undefined,
+    revisions: state.currentProject?.revisions ?? [],
   };
 }
 
@@ -235,6 +281,17 @@ export function resolveSelectedFeatureId(plan: DraftCamPlan | null, entity: Sele
   return null;
 }
 
+export function unsavedOperationSummary(plan: DraftCamPlan | null): { modified: number; manual: number; disabled: number } {
+  if (!plan) {
+    return { modified: 0, manual: 0, disabled: 0 };
+  }
+  return {
+    modified: plan.operations.filter((operation) => operation.isDirty).length,
+    manual: plan.operations.filter((operation) => operation.origin === 'manual').length,
+    disabled: plan.operations.filter((operation) => !operation.enabled).length,
+  };
+}
+
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
     case 'sampleLoaded':
@@ -242,11 +299,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         {
           ...state,
           sample: action.sample,
+        },
+        action.message,
+      );
+    case 'importSessionLoaded':
+      return appendConsole(
+        {
+          ...state,
+          sample: action.importSession.deterministicPartInput ?? state.sample,
+          currentImportSession: action.importSession,
+          currentModel: action.importSession.importedModel ?? null,
           draftPlan: null,
           review: null,
           selectedEntity: null,
           dirty: false,
-          lastSavedAt: null,
+          lastSavedAt: action.importSession.updatedAt,
+          history: [],
+          future: [],
         },
         action.message,
       );
@@ -258,9 +327,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           sample: plan.part,
           draftPlan: plan,
           review: null,
+          currentProject: null,
           selectedEntity: plan.features[0] ? { type: 'feature', id: plan.features[0].id } : null,
           dirty: false,
           lastSavedAt: null,
+          history: [],
+          future: [],
         },
         action.message,
       );
@@ -299,7 +371,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           review: action.project.review ?? null,
           selectedEntity: action.project.selectedEntity ?? null,
           dirty: false,
-          lastSavedAt: action.project.savedAt ?? action.project.metadata?.updatedAt ?? null,
+          lastSavedAt: action.project.updatedAt,
+          currentProject: action.project,
+          currentModel: action.project.derivedModel ?? null,
+          history: [],
+          future: [],
         },
         action.message,
       );
@@ -308,12 +384,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         {
           ...state,
           draftPlan: normalizeSavedPlan(action.project.plan),
-          projects: [
-            ...(action.project.metadata ? [action.project.metadata] : []),
-            ...state.projects.filter((project) => project.projectId !== action.project.projectId),
-          ],
+          projects: [action.project, ...state.projects.filter((project) => project.projectId !== action.project.projectId)],
+          currentProject: action.project,
+          currentModel: action.project.derivedModel ?? state.currentModel,
           dirty: false,
-          lastSavedAt: action.project.savedAt ?? action.project.metadata?.updatedAt ?? null,
+          lastSavedAt: action.project.updatedAt,
+          history: [],
+          future: [],
         },
         action.message,
       );
@@ -335,15 +412,17 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
         const nextToolId = action.changes.toolId ?? operation.toolId;
         const nextTool = findTool(draftPlan, nextToolId) ?? findTool(draftPlan, operation.toolId);
+        const nextFeatureId = action.changes.featureId ?? operation.featureId;
         const nextSetupId = action.changes.setupId ?? operation.setupId;
         const nextSetup = action.changes.setup ?? getSetupLabel(draftPlan.setups, nextSetupId, operation.setup);
 
         return {
           ...operation,
           ...action.changes,
+          featureId: nextFeatureId,
           setupId: nextSetupId,
           setup: nextSetup,
-          groupId: buildOperationGroupId(nextSetupId, operation.featureId),
+          groupId: buildOperationGroupId(nextSetupId, nextFeatureId),
           toolId: nextToolId,
           toolName: nextTool?.name ?? operation.toolName,
           isDirty: true,
@@ -352,14 +431,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
+          ...applyDraftEdit(
+            state,
             nextOperations,
             'Manual edits changed the draft plan. Review and approval are required before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'operation', id: action.operationId },
         },
         action.message,
@@ -369,9 +445,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       if (!state.draftPlan) {
         return state;
       }
-      const draftPlan = state.draftPlan;
-
-      const currentOperations = orderedOperations(draftPlan.operations);
+      const currentOperations = orderedOperations(state.draftPlan.operations);
       const currentIndex = currentOperations.findIndex((operation) => operation.id === action.operationId);
       const offset = action.direction === 'up' ? -1 : 1;
       const targetIndex = currentIndex + offset;
@@ -388,14 +462,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
+          ...applyDraftEdit(
+            state,
             nextOperations,
             'Operation order changed in the manual draft. Review and approval are required before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'operation', id: action.operationId },
         },
         action.message,
@@ -405,9 +476,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       if (!state.draftPlan) {
         return state;
       }
-      const draftPlan = state.draftPlan;
 
-      const nextOperations = draftPlan.operations.map((operation) =>
+      const nextOperations = state.draftPlan.operations.map((operation) =>
         operation.id === action.operationId
           ? {
               ...operation,
@@ -419,14 +489,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
+          ...applyDraftEdit(
+            state,
             nextOperations,
             'Operation enablement changed in the draft. Review machining coverage before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'operation', id: action.operationId },
         },
         action.message,
@@ -436,19 +503,15 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       if (!state.draftPlan) {
         return state;
       }
-      const draftPlan = state.draftPlan;
 
-      const manualOperation = createManualOperation(draftPlan, action.featureId);
+      const manualOperation = createManualOperation(state.draftPlan, action.featureId);
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
-            [...draftPlan.operations, manualOperation],
+          ...applyDraftEdit(
+            state,
+            [...state.draftPlan.operations, manualOperation],
             'Manual operations were added to the draft. Review and approval are required before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'operation', id: manualOperation.id },
         },
         action.message,
@@ -458,23 +521,19 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       if (!state.draftPlan) {
         return state;
       }
-      const draftPlan = state.draftPlan;
-      const sourceOperation = draftPlan.operations.find((operation) => operation.id === action.operationId);
+      const sourceOperation = state.draftPlan.operations.find((operation) => operation.id === action.operationId);
       if (!sourceOperation) {
         return state;
       }
 
-      const manualCopy = createManualOperation(draftPlan, sourceOperation.featureId, sourceOperation);
+      const manualCopy = createManualOperation(state.draftPlan, sourceOperation.featureId, sourceOperation);
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
-            [...draftPlan.operations, manualCopy],
+          ...applyDraftEdit(
+            state,
+            [...state.draftPlan.operations, manualCopy],
             'An operation was duplicated into a manual draft override. Review is required before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'operation', id: manualCopy.id },
         },
         action.message,
@@ -484,24 +543,58 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       if (!state.draftPlan) {
         return state;
       }
-      const draftPlan = state.draftPlan;
-      const operation = draftPlan.operations.find((item) => item.id === action.operationId);
+      const operation = state.draftPlan.operations.find((item) => item.id === action.operationId);
       if (!operation || operation.origin !== 'manual') {
         return state;
       }
 
-      const nextOperations = draftPlan.operations.filter((item) => item.id !== action.operationId);
+      const nextOperations = state.draftPlan.operations.filter((item) => item.id !== action.operationId);
       return appendConsole(
         {
-          ...state,
-          draftPlan: applyDraftEdit(
-            draftPlan,
+          ...applyDraftEdit(
+            state,
             nextOperations,
             'A manual operation was deleted from the draft. Review and approval are required before release.',
           ),
-          review: null,
-          dirty: true,
           selectedEntity: { type: 'feature', id: operation.featureId },
+        },
+        action.message,
+      );
+    }
+    case 'undo': {
+      if (!state.draftPlan || state.history.length === 0) {
+        return state;
+      }
+      const previous = state.history[state.history.length - 1];
+      if (!previous) {
+        return state;
+      }
+      return appendConsole(
+        {
+          ...state,
+          draftPlan: previous,
+          history: state.history.slice(0, -1),
+          future: [normalizeSavedPlan(state.draftPlan), ...state.future].slice(0, 30),
+          dirty: true,
+        },
+        action.message,
+      );
+    }
+    case 'redo': {
+      if (!state.draftPlan || state.future.length === 0) {
+        return state;
+      }
+      const [next, ...remaining] = state.future;
+      if (!next) {
+        return state;
+      }
+      return appendConsole(
+        {
+          ...state,
+          draftPlan: next,
+          history: [...state.history, normalizeSavedPlan(state.draftPlan)].slice(-30),
+          future: remaining,
+          dirty: true,
         },
         action.message,
       );
