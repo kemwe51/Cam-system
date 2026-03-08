@@ -179,6 +179,14 @@ describe('CAM API server', () => {
 
     const legacyLoadResponse = await fetch(`${instance.baseUrl}/drafts/${projectId}`);
     expect(legacyLoadResponse.ok).toBe(true);
+
+    const nativeWorkbenchResponse = await fetch(`${instance.baseUrl}/projects/${projectId}/native-workbench`);
+    expect(nativeWorkbenchResponse.ok).toBe(true);
+    const nativeWorkbench = await nativeWorkbenchResponse.json();
+    expect(nativeWorkbench.schemaVersion).toBe('native-workbench-v1');
+    expect(nativeWorkbench.projectId).toBe(projectId);
+    expect(nativeWorkbench.nodes.some((node: { kind: string; label: string }) => node.kind === 'collection' && node.label === 'Operations')).toBe(true);
+    expect(nativeWorkbench.selectionLinks.some((link: { operationNodeId?: string; previewNodeId?: string }) => link.operationNodeId && link.previewNodeId)).toBe(true);
   });
 
   it('creates DXF import sessions with geometry, extracted features, and draftable deterministic input', async () => {

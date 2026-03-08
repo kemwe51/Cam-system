@@ -2,11 +2,11 @@
 
 ## Near term
 
-1. Add DXF and STEP ingestion adapters that normalize geometry into the structured part model.
-2. Expand the deterministic tool library and operation rules by material and machine class.
-3. Add persistent jobs, review history, and approval audit records in the API.
-4. Improve AI review prompts and add server-side response recording with explicit traceability.
-5. Add richer tests around sequencing, tool reach, and feature-specific risk rules.
+1. Wire real Open CASCADE STEP/XDE loading into `apps/desktop-native` with viewport navigation and persistent topology ids.
+2. Expand topology-aware feature extraction so the desktop workbench can relate solids/faces/loops to deterministic CAM features.
+3. Add native path-planning visualization and richer operation/preview linking in the desktop shell.
+4. Expand the deterministic tool library and operation rules by material and machine class.
+5. Add persistent jobs, review history, and approval audit records across both the companion API and future desktop workbench storage.
 
 ## Explicit stubs in v1
 

@@ -241,6 +241,58 @@ export const projectRecordSchema = z.object({
 });
 export type ProjectRecord = z.infer<typeof projectRecordSchema>;
 
+export const nativeWorkbenchNodeSchema = z.object({
+  id: z.string().min(1),
+  stableId: z.string().min(1),
+  kind: z.enum(['project', 'collection', 'source', 'model_entity', 'feature', 'operation', 'tool', 'operation_preview']),
+  label: z.string().min(1),
+  parentId: z.string().min(1).optional(),
+  status: z.enum(['ready', 'warning', 'placeholder']).default('ready'),
+  entityId: z.string().min(1).optional(),
+  featureId: z.string().min(1).optional(),
+  operationId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  previewId: z.string().min(1).optional(),
+  sourceGeometryIds: z.array(z.string().min(1)).default([]),
+  metadata: z.record(z.string(), z.string()).default({}),
+});
+export type NativeWorkbenchNode = z.infer<typeof nativeWorkbenchNodeSchema>;
+
+export const nativeWorkbenchSelectionLinkSchema = z.object({
+  id: z.string().min(1),
+  syncChannels: z.array(z.enum(['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector', 'warnings'])).default([]),
+  modelEntityNodeId: z.string().min(1).optional(),
+  featureNodeId: z.string().min(1).optional(),
+  operationNodeId: z.string().min(1).optional(),
+  toolNodeId: z.string().min(1).optional(),
+  previewNodeId: z.string().min(1).optional(),
+  sourceGeometryIds: z.array(z.string().min(1)).default([]),
+});
+export type NativeWorkbenchSelectionLink = z.infer<typeof nativeWorkbenchSelectionLinkSchema>;
+
+export const nativeWorkbenchSnapshotSchema = z.object({
+  schemaVersion: z.literal('native-workbench-v1'),
+  projectId: z.string().min(1),
+  revision: z.number().int().positive(),
+  approvalState: z.enum(['draft', 'in_review', 'approved']),
+  sourceType: modelSourceSchema.shape.type.optional(),
+  sourceImportId: z.string().min(1).optional(),
+  importedModelId: z.string().min(1).optional(),
+  view: modelViewSchema.optional(),
+  warnings: z.array(z.string()).default([]),
+  nodes: z.array(nativeWorkbenchNodeSchema),
+  selectionLinks: z.array(nativeWorkbenchSelectionLinkSchema),
+  metadata: z.object({
+    featureCount: z.number().int().nonnegative(),
+    extractedFeatureCount: z.number().int().nonnegative(),
+    operationCount: z.number().int().nonnegative(),
+    toolCount: z.number().int().nonnegative(),
+    previewCount: z.number().int().nonnegative(),
+    hasPlaceholderModel: z.boolean(),
+  }),
+});
+export type NativeWorkbenchSnapshot = z.infer<typeof nativeWorkbenchSnapshotSchema>;
+
 const defaultPresets: ViewPreset[] = [
   { id: 'preset-fit-shaded', label: 'Fit · shaded', orientation: 'fit', mode: 'shaded' },
   { id: 'preset-top-wireframe', label: 'Top · wireframe', orientation: 'top', mode: 'wireframe' },
@@ -1025,5 +1077,230 @@ export function buildProjectRevisionRecord(projectId: string, revision: number, 
     warningCount,
     operationCount: plan.operations.length,
     manualOperationCount: plan.operations.filter((operation) => operation.origin === 'manual').length,
+  });
+}
+
+export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWorkbenchSnapshot {
+  const projectNodeId = `node-project-${sanitizeId(project.projectId)}`;
+  const sourceNodeId = project.sourceImportId ? `node-source-${sanitizeId(project.sourceImportId)}` : undefined;
+  const modelCollectionId = `${projectNodeId}-collection-model-tree`;
+  const featuresCollectionId = `${projectNodeId}-collection-features`;
+  const operationsCollectionId = `${projectNodeId}-collection-operations`;
+  const toolsCollectionId = `${projectNodeId}-collection-tools`;
+  const previewsCollectionId = `${projectNodeId}-collection-path-previews`;
+  const model = project.derivedModel;
+  const plan = project.plan;
+  const operationPreviews = model ? deriveOperationPreviews(model, plan.operations) : [];
+  const featureLinksByFeatureId = new Map((model?.featureGeometryLinks ?? []).map((link) => [link.featureId, link]));
+  const previewByOperationId = new Map(operationPreviews.map((preview) => [preview.operationId, preview]));
+  const entityNodeIds = new Map<string, string>();
+  const featureNodeIds = new Map<string, string>();
+  const operationNodeIds = new Map<string, string>();
+  const toolNodeIds = new Map<string, string>();
+  const previewNodeIds = new Map<string, string>();
+  const catalog = plan.toolLibrary.tools.length > 0 ? plan.toolLibrary.tools : plan.tools;
+  const usedToolIds = new Set(plan.operations.map((operation) => operation.toolId));
+  const usedTools = catalog.filter((tool) => usedToolIds.has(tool.id));
+
+  const nodes: NativeWorkbenchNode[] = [
+    nativeWorkbenchNodeSchema.parse({
+      id: projectNodeId,
+      stableId: project.projectId,
+      kind: 'project',
+      label: project.sourceFilename ? `${project.projectId} · ${project.sourceFilename}` : project.projectId,
+      status: project.warnings.length > 0 ? 'warning' : 'ready',
+      metadata: {
+        revision: String(project.revision),
+        approvalState: project.approvalState,
+      },
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: modelCollectionId,
+      stableId: `${project.projectId}:model-tree`,
+      kind: 'collection',
+      label: 'Model tree',
+      parentId: projectNodeId,
+      status: model?.status === 'placeholder' ? 'placeholder' : 'ready',
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: featuresCollectionId,
+      stableId: `${project.projectId}:features`,
+      kind: 'collection',
+      label: 'Features',
+      parentId: projectNodeId,
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: operationsCollectionId,
+      stableId: `${project.projectId}:operations`,
+      kind: 'collection',
+      label: 'Operations',
+      parentId: projectNodeId,
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: toolsCollectionId,
+      stableId: `${project.projectId}:tools`,
+      kind: 'collection',
+      label: 'Tools',
+      parentId: projectNodeId,
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: previewsCollectionId,
+      stableId: `${project.projectId}:path-previews`,
+      kind: 'collection',
+      label: 'Path previews',
+      parentId: projectNodeId,
+      status: operationPreviews.length > 0 ? 'ready' : 'placeholder',
+    }),
+  ];
+
+  if (sourceNodeId) {
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: sourceNodeId,
+      stableId: project.sourceImportId ?? project.projectId,
+      kind: 'source',
+      label: project.sourceFilename ?? 'Imported source',
+      parentId: projectNodeId,
+      status: model?.status === 'placeholder' ? 'placeholder' : 'ready',
+      metadata: {
+        sourceType: project.sourceType ?? 'json',
+      },
+    }));
+  }
+
+  for (const entity of model?.entities ?? []) {
+    const nodeId = `node-entity-${sanitizeId(entity.id)}`;
+    entityNodeIds.set(entity.id, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: entity.stableId,
+      kind: 'model_entity',
+      label: entity.label,
+      parentId: modelCollectionId,
+      status: entity.selectable ? 'ready' : 'placeholder',
+      entityId: entity.id,
+      ...(entity.featureId ? { featureId: entity.featureId } : {}),
+      ...(entity.operationId ? { operationId: entity.operationId } : {}),
+      metadata: {
+        layerId: entity.layerId,
+        entityKind: entity.kind,
+      },
+    }));
+  }
+
+  for (const extractedFeature of model?.extractedFeatures ?? []) {
+    const nodeId = `node-feature-${sanitizeId(extractedFeature.id)}`;
+    featureNodeIds.set(extractedFeature.mappedFeatureId ?? extractedFeature.id, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: extractedFeature.mappedFeatureId ?? extractedFeature.id,
+      kind: 'feature',
+      label: extractedFeature.label,
+      parentId: featuresCollectionId,
+      status: extractedFeature.warnings.length > 0 ? 'warning' : extractedFeature.classificationState === 'ignored' ? 'placeholder' : 'ready',
+      featureId: extractedFeature.mappedFeatureId ?? extractedFeature.id,
+      sourceGeometryIds: extractedFeature.sourceGeometryRefs,
+      metadata: {
+        inferenceMethod: extractedFeature.inferenceMethod,
+        kind: extractedFeature.kind,
+        classificationState: extractedFeature.classificationState,
+      },
+    }));
+  }
+
+  for (const operation of plan.operations) {
+    const nodeId = `node-operation-${sanitizeId(operation.id)}`;
+    operationNodeIds.set(operation.id, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: operation.id,
+      kind: 'operation',
+      label: operation.name,
+      parentId: operationsCollectionId,
+      status: operation.warnings.length > 0 || !operation.enabled ? 'warning' : 'ready',
+      operationId: operation.id,
+      featureId: operation.featureId,
+      toolId: operation.toolId,
+      sourceGeometryIds: featureLinksByFeatureId.get(operation.featureId)?.sourceGeometryIds ?? [],
+      metadata: {
+        kind: operation.kind,
+        source: operation.source,
+        setupId: operation.setupId,
+      },
+    }));
+  }
+
+  for (const tool of usedTools) {
+    const nodeId = `node-tool-${sanitizeId(tool.id)}`;
+    toolNodeIds.set(tool.id, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: tool.id,
+      kind: 'tool',
+      label: tool.name,
+      parentId: toolsCollectionId,
+      toolId: tool.id,
+      metadata: {
+        diameterMm: tool.diameterMm.toFixed(3),
+        type: tool.type,
+      },
+    }));
+  }
+
+  for (const preview of operationPreviews) {
+    const nodeId = `node-preview-${sanitizeId(preview.id)}`;
+    previewNodeIds.set(preview.operationId, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: preview.id,
+      kind: 'operation_preview',
+      label: preview.label,
+      parentId: previewsCollectionId,
+      status: preview.warnings.length > 0 ? 'warning' : 'ready',
+      previewId: preview.id,
+      operationId: preview.operationId,
+      featureId: preview.featureId,
+      ...(preview.entityId ? { entityId: preview.entityId } : {}),
+      metadata: {
+        kind: preview.kind,
+        pathPreviewMode: preview.pathPreviewMode,
+      },
+    }));
+  }
+
+  const selectionLinks: NativeWorkbenchSelectionLink[] = plan.operations.map((operation) => {
+    const featureLink = featureLinksByFeatureId.get(operation.featureId);
+    const preview = previewByOperationId.get(operation.id);
+    return nativeWorkbenchSelectionLinkSchema.parse({
+      id: `selection-link-${sanitizeId(operation.id)}`,
+      syncChannels: ['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector'],
+      ...(featureLink?.entityId ? { modelEntityNodeId: entityNodeIds.get(featureLink.entityId) } : {}),
+      ...(featureNodeIds.has(operation.featureId) ? { featureNodeId: featureNodeIds.get(operation.featureId) } : {}),
+      ...(operationNodeIds.has(operation.id) ? { operationNodeId: operationNodeIds.get(operation.id) } : {}),
+      ...(toolNodeIds.has(operation.toolId) ? { toolNodeId: toolNodeIds.get(operation.toolId) } : {}),
+      ...(preview ? { previewNodeId: previewNodeIds.get(operation.id) } : {}),
+      sourceGeometryIds: featureLink?.sourceGeometryIds ?? [],
+    });
+  });
+
+  return nativeWorkbenchSnapshotSchema.parse({
+    schemaVersion: 'native-workbench-v1',
+    projectId: project.projectId,
+    revision: project.revision,
+    approvalState: project.approvalState,
+    sourceType: project.sourceType,
+    sourceImportId: project.sourceImportId,
+    importedModelId: project.derivedModel?.id,
+    view: project.derivedModel?.view,
+    warnings: [...project.warnings, ...(model?.warnings ?? [])],
+    nodes,
+    selectionLinks,
+    metadata: {
+      featureCount: plan.features.length,
+      extractedFeatureCount: model?.extractedFeatures.length ?? 0,
+      operationCount: plan.operations.length,
+      toolCount: usedTools.length,
+      previewCount: operationPreviews.length,
+      hasPlaceholderModel: model?.status === 'placeholder',
+    },
   });
 }

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { reviewDraftPlan, type ReviewSupplementalContext } from '@cam/ai';
-import { importedModelSchema, projectRecordSchema, type ImportSessionRecord } from '@cam/model';
+import { buildNativeWorkbenchSnapshot, importedModelSchema, projectRecordSchema, type ImportSessionRecord } from '@cam/model';
 import { approvePlan, planPart, regenerateDraftPlan, samplePartInput } from '@cam/engine';
 import { defaultImporterRegistry, type ImportFormat, type ImportResult, type ImportedPartSource } from '@cam/importers';
 import {
@@ -90,6 +90,11 @@ function corsHeaders(requestOrigin?: string): Record<string, string> {
 
 function matchRoute(pathname: string, prefix: string): string | null {
   const match = new RegExp(`^/${prefix}/([^/]+)$`).exec(pathname);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function matchProjectWorkbenchRoute(pathname: string): string | null {
+  const match = /^\/projects\/([^/]+)\/native-workbench$/.exec(pathname);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
@@ -191,6 +196,21 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
 
       if (request.method === 'GET' && url.pathname === '/projects') {
         sendJson(response, 200, { projects: await projectRepository.list() }, requestOrigin);
+        return;
+      }
+
+      const nativeWorkbenchProjectId = matchProjectWorkbenchRoute(url.pathname);
+      if (request.method === 'GET' && nativeWorkbenchProjectId) {
+        const project = await projectRepository.load(nativeWorkbenchProjectId);
+        if (!project) {
+          sendJson(response, 404, {
+            error: 'Project not found',
+            projectId: nativeWorkbenchProjectId,
+          }, requestOrigin);
+          return;
+        }
+
+        sendJson(response, 200, buildNativeWorkbenchSnapshot(project), requestOrigin);
         return;
       }
 

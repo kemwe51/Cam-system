@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { buildGeometryGraph, parseDxfGeometry2D } from '@cam/geometry2d';
 import { extractGeometryFeatures, planPart } from '@cam/engine';
 import { samplePartInput } from '@cam/shared';
-import { createModelSource, deriveImportedModelFromGeometry, deriveImportedModelFromPart, deriveOperationPreviews } from './index.js';
+import {
+  buildNativeWorkbenchSnapshot,
+  buildProjectRevisionRecord,
+  createModelSource,
+  deriveImportedModelFromGeometry,
+  deriveImportedModelFromPart,
+  deriveOperationPreviews,
+} from './index.js';
 
 const dxfFixture = `0
 SECTION
@@ -232,5 +239,49 @@ describe('@cam/model', () => {
     expect(contourPreview.pathProfile?.pathPlans.length).toBeGreaterThan(0);
     expect(contourPreview.paths[0]?.segments.some((segment) => segment.motionType === 'rapid_move')).toBe(true);
     expect(contourPreview.depthAnnotations.some((annotation) => annotation.includes('deterministic path candidate'))).toBe(true);
+  });
+
+  it('builds a native workbench snapshot that links model, features, operations, tools, and previews', () => {
+    const source = createModelSource({
+      id: 'import-json-sample',
+      type: 'json',
+      filename: 'sample.json',
+      mediaType: 'application/json',
+    });
+    const model = deriveImportedModelFromPart(source, samplePartInput);
+    const plan = planPart(samplePartInput);
+    const projectId = `${plan.part.partId}-${plan.part.revision}`;
+    const project = {
+      projectId,
+      revision: 1,
+      sourceImportId: source.id,
+      sourceType: source.type,
+      sourceFilename: source.filename,
+      derivedModel: model,
+      planMetadata: {
+        featureCount: plan.summary.featureCount,
+        operationCount: plan.summary.operationCount,
+        enabledOperationCount: plan.summary.enabledOperationCount,
+        manualOperationCount: plan.summary.manualOperationCount,
+        estimatedCycleTimeMinutes: plan.estimatedCycleTimeMinutes,
+        highestRisk: plan.summary.highestRisk,
+      },
+      approvalState: plan.approval.state,
+      updatedAt: new Date().toISOString(),
+      warnings: [],
+      plan,
+      revisions: [buildProjectRevisionRecord(projectId, 1, plan, source.id)],
+    };
+
+    const snapshot = buildNativeWorkbenchSnapshot(project);
+
+    expect(snapshot.schemaVersion).toBe('native-workbench-v1');
+    expect(snapshot.projectId).toBe(projectId);
+    expect(snapshot.metadata.featureCount).toBe(plan.features.length);
+    expect(snapshot.nodes.some((node) => node.kind === 'collection' && node.label === 'Model tree')).toBe(true);
+    expect(snapshot.nodes.some((node) => node.kind === 'operation' && node.operationId === plan.operations[0]?.id)).toBe(true);
+    expect(snapshot.nodes.some((node) => node.kind === 'tool' && node.toolId === plan.operations[0]?.toolId)).toBe(true);
+    expect(snapshot.nodes.some((node) => node.kind === 'operation_preview')).toBe(true);
+    expect(snapshot.selectionLinks.some((link) => link.operationNodeId && link.previewNodeId)).toBe(true);
   });
 });
