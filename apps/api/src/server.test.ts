@@ -180,5 +180,26 @@ describe('CAM API server', () => {
     expect(importSession.importedModel.extractedFeatures.length).toBeGreaterThan(0);
     expect(importSession.deterministicPartInput.contours.length).toBeGreaterThan(0);
     expect(importSession.warnings.join(' ')).toContain('feature depths are assumed planning defaults');
+
+    const generateResponse = await fetch(`${instance.baseUrl}/operations/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(importSession.deterministicPartInput),
+    });
+    expect(generateResponse.ok).toBe(true);
+    const generatedPlan = await generateResponse.json();
+    expect(generatedPlan.operations.length).toBeGreaterThan(0);
+
+    const regenerateResponse = await fetch(`${instance.baseUrl}/operations/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan: generatedPlan,
+        preserveFrozenEdited: true,
+      }),
+    });
+    expect(regenerateResponse.ok).toBe(true);
+    const regeneratedPlan = await regenerateResponse.json();
+    expect(regeneratedPlan.approval.notes.join(' ')).toContain('regenerated');
   });
 });

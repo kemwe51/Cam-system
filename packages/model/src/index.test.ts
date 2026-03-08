@@ -109,6 +109,8 @@ describe('@cam/model', () => {
     expect(previews[0]?.id).toBe('preview-op-profile-1');
     expect(previews[0]?.operationId).toBe('op-profile-1');
     expect(previews[0]?.kind).toBe('contour_path');
+    expect(previews[0]?.paths[0]?.segments.length).toBeGreaterThan(0);
+    expect(previews[0]?.source).toBe('generated');
   });
 
   it('derives imported geometry, extracted features, and links from DXF-backed geometry documents', () => {

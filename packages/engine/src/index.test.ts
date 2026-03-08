@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometryGraph, parseDxfGeometry2D } from '@cam/geometry2d';
 import { partInputSchema, projectDraftSchema, samplePartInput } from '@cam/shared';
-import { approvePlan, extractGeometryFeatures, planPart } from './index.js';
+import { approvePlan, extractGeometryFeatures, planPart, regenerateDraftPlan } from './index.js';
 
 const dxfFixture = `0
 SECTION
@@ -99,14 +99,18 @@ describe('planPart', () => {
     expect(plan.features).toHaveLength(7);
     expect(plan.operations.map((operation) => operation.kind)).toEqual([
       'face',
-      'profile',
+      'drill',
       'pocket',
       'pocket',
       'slot',
-      'drill',
+      'profile',
+      'profile',
       'chamfer',
       'engrave',
     ]);
+    expect(plan.operations[1]?.name).toContain('Drill');
+    expect(plan.operations.filter((operation) => operation.kind === 'profile')).toHaveLength(2);
+    expect(plan.operations.every((operation) => operation.source === (operation.origin === 'manual' ? 'manual' : 'generated'))).toBe(true);
     expect(plan.summary.highestRisk).toBe('high');
     expect(plan.approval.requiresHumanApproval).toBe(true);
     expect(plan.estimatedCycleTimeMinutes).toBeGreaterThan(0);
@@ -166,5 +170,88 @@ describe('planPart', () => {
     expect(extraction.graph.openProfileIds.length).toBe(1);
     expect(extraction.warnings.join(' ')).toContain('unclassified');
     expect(() => partInputSchema.parse(extraction.partInput)).not.toThrow();
+  });
+
+  it('groups matching circles into grouped hole operations and regenerates after feature reclassification', () => {
+    const groupedCircleDxf = `0
+SECTION
+2
+HEADER
+9
+$INSUNITS
+70
+4
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+8
+OUTER
+90
+4
+70
+1
+10
+0
+20
+0
+10
+100
+20
+0
+10
+100
+20
+60
+10
+0
+20
+60
+0
+CIRCLE
+8
+HOLES
+10
+20
+20
+20
+40
+3
+0
+CIRCLE
+8
+HOLES
+10
+80
+20
+20
+40
+3
+0
+ENDSEC
+0
+EOF`;
+    const extraction = extractGeometryFeatures(parseDxfGeometry2D(groupedCircleDxf, 'holes'));
+    expect(extraction.partInput.holeGroups).toHaveLength(1);
+    expect(extraction.partInput.holeGroups[0]?.count).toBe(2);
+
+    const initialPlan = planPart(extraction.partInput);
+    expect(initialPlan.operations.filter((operation) => operation.kind === 'drill')).toHaveLength(1);
+
+    const featureId = initialPlan.features.find((feature) => feature.kind === 'hole_group')!.id;
+    const reclassified = initialPlan.features.map((feature) => feature.id === featureId
+      ? { ...feature, kind: 'slot' as const, classificationState: 'manual_override' as const }
+      : feature);
+    const regenerated = regenerateDraftPlan({
+      ...initialPlan,
+      features: reclassified,
+    });
+
+    expect(regenerated.features.find((feature) => feature.id === featureId)?.kind).toBe('slot');
+    expect(regenerated.operations.some((operation) => operation.featureId === featureId && operation.kind === 'slot')).toBe(true);
   });
 });

@@ -35,7 +35,7 @@ The model/import pipeline owns:
 
 The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
 
-## DXF & 2D Geometry Pipeline v4
+## CAM Operations v5
 
 `@cam/geometry2d` is now the internal contract boundary for imported planar source data.
 
@@ -71,6 +71,7 @@ Current model vocabulary includes:
 - `DerivedGeometryFragment`
 - `FeatureGeometryLink`
 - `OperationPreview`
+- `PreviewPath`
 - `ViewPreset`
 - `ViewMode`
 
@@ -104,6 +105,8 @@ Current routes:
 - `PUT /projects/:projectId`
 - legacy `GET /drafts/:projectId`
 - `POST /plan`
+- `POST /operations/generate`
+- `POST /operations/regenerate`
 - `POST /review`
 - `POST /approve`
 
@@ -131,7 +134,7 @@ Saved projects now track:
 
 This is still intentionally simple. The repo does not yet implement multi-user locking, branch/merge semantics, or immutable artifact promotion.
 
-## Workbench v3 UI structure
+## Workbench UI structure
 
 The web app now uses a persistent CAM-style layout with an explicit import-first workflow:
 
@@ -149,6 +152,8 @@ Manual programming still remains practical and reducer-driven:
 - delete manual operations
 - reorder operations
 - relink operation to a different feature
+- freeze edited/manual operations before regeneration
+- regenerate generated operations from the full draft or a selected feature
 - local undo/redo
 
 ## DXF subset and viewport pipeline
@@ -183,6 +188,15 @@ Operation previews are intentionally honest overlays only:
 - unlinked/manual cases → generic preview badge
 
 These are **not** toolpaths. Imported geometry remains 2D interpretation only, optional stock thickness is derived planning context only, and any simple extrusion/context rendering is advisory rather than a solid model.
+
+CAM Operations v5 generated subset:
+
+- outside contour rough + finish operations
+- conservative inside contour operations
+- conservative pocket rough + finish operations
+- conservative slot operations
+- grouped drilling operations from inferred circle patterns
+- marking-only engraving operations
 
 ## Current boundaries
 

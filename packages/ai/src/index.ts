@@ -28,6 +28,10 @@ type ReviewContext = {
     closedProfileCount?: number;
     unclassifiedGeometryCount?: number;
     extractionWarnings: string[];
+    previewSummary: {
+      linkedFeatureCount: number;
+      extractedFeatureWarningCount: number;
+    };
   };
   projectContext: {
     projectId?: string;
@@ -109,6 +113,10 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
           }
         : {}),
       extractionWarnings: context.model?.extractedFeatures.flatMap((feature) => feature.warnings) ?? [],
+      previewSummary: {
+        linkedFeatureCount: context.model?.featureGeometryLinks.length ?? 0,
+        extractedFeatureWarningCount: context.model?.extractedFeatures.flatMap((feature) => feature.warnings).length ?? 0,
+      },
     },
     projectContext: {
       ...(context.project?.projectId ? { projectId: context.project.projectId } : {}),

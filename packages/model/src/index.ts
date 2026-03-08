@@ -12,10 +12,12 @@ import {
 import {
   camReviewSchema,
   draftCamPlanSchema,
+  previewPathSchema,
   selectedEntitySchema,
   type DraftCamPlan,
   type NormalizedFeature,
   type Operation,
+  type PreviewPath,
   partInputSchema,
   type PartInput,
 } from '@cam/shared';
@@ -130,7 +132,9 @@ export const operationPreviewSchema = z.object({
   entityId: z.string().min(1).optional(),
   kind: z.enum(['contour_path', 'pocket_region', 'hole_marker', 'edge_marker', 'text_marker', 'generic_badge']),
   label: z.string().min(1),
+  source: z.enum(['generated', 'manual', 'edited']).default('generated'),
   fragmentIds: z.array(z.string().min(1)).default([]),
+  paths: z.array(previewPathSchema).default([]),
   warnings: z.array(z.string()).default([]),
 });
 export type OperationPreview = z.infer<typeof operationPreviewSchema>;
@@ -766,6 +770,68 @@ export function createPlaceholderImportedModel(source: ModelSource, warning: str
   });
 }
 
+function previewOutline(position: [number, number, number], size: [number, number, number]): Array<[number, number, number]> {
+  const halfX = Math.max(size[0] / 2, 0.5);
+  const halfY = Math.max(size[1] / 2, 0.5);
+  const z = position[2] + size[2] / 2 + 0.6;
+  return [
+    [position[0] - halfX, position[1] - halfY, z],
+    [position[0] + halfX, position[1] - halfY, z],
+    [position[0] + halfX, position[1] + halfY, z],
+    [position[0] - halfX, position[1] + halfY, z],
+    [position[0] - halfX, position[1] - halfY, z],
+  ];
+}
+
+function buildPreviewPaths(
+  operation: Operation,
+  previewId: string,
+  fragment?: DerivedGeometryFragment,
+  entity?: ModelEntity,
+): PreviewPath[] {
+  const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
+  const size = fragment?.size ?? entity?.bounds.size ?? [8, 8, 1];
+  const segments = fragment?.points.length && fragment.points.length >= 2
+    ? [{
+        id: `${previewId}-segment-1`,
+        kind:
+          operation.kind === 'slot'
+            ? 'centerline'
+            : operation.kind === 'drill'
+              ? 'marker'
+              : operation.kind === 'pocket' || operation.kind === 'face'
+                ? 'region'
+                : 'line',
+        points: fragment.points,
+        closed: fragment.closed,
+        ...(fragment.label ? { label: fragment.label } : {}),
+      }]
+    : [{
+        id: `${previewId}-segment-1`,
+        kind:
+          operation.kind === 'drill'
+            ? 'marker'
+            : operation.kind === 'slot'
+              ? 'centerline'
+              : operation.kind === 'pocket' || operation.kind === 'face'
+                ? 'region'
+                : 'line',
+        points: previewOutline(position, size),
+        closed: operation.kind !== 'drill',
+      }];
+
+  return [
+    previewPathSchema.parse({
+      id: `${previewId}-path-1`,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: operation.name,
+      source: operation.origin === 'manual' ? 'manual' : 'generated',
+      segments,
+    }),
+  ];
+}
+
 function previewKind(operation: Operation): OperationPreview['kind'] {
   switch (operation.kind) {
     case 'profile':
@@ -787,21 +853,30 @@ function previewKind(operation: Operation): OperationPreview['kind'] {
 
 export function deriveOperationPreviews(model: ImportedModel, operations: DraftCamPlan['operations']): OperationPreview[] {
   const links = new Map(model.featureGeometryLinks.map((link) => [link.featureId, link]));
+  const entityMap = new Map(model.entities.map((entity) => [entity.id, entity]));
+  const fragmentMap = new Map(model.fragments.map((fragment) => [fragment.id, fragment]));
   return operations.map((operation) => {
     const link = links.get(operation.featureId);
+    const entity = link?.entityId ? entityMap.get(link.entityId) : undefined;
+    const fragment = link?.fragmentIds[0] ? fragmentMap.get(link.fragmentIds[0]) : undefined;
+    const previewId = `preview-${sanitizeId(operation.id)}`;
     const warnings = !link
       ? ['No derived geometry link is available for this operation preview. Rendering generic preview only.']
       : operation.origin === 'manual'
         ? ['Manual operation preview is advisory only and may not match deterministic feature coverage.']
-        : [];
+        : operation.source === 'edited'
+          ? ['Edited generated operation preview is derived from the linked geometry and should be re-reviewed after regeneration changes.']
+          : [];
     return operationPreviewSchema.parse({
-      id: `preview-${sanitizeId(operation.id)}`,
+      id: previewId,
       operationId: operation.id,
       featureId: operation.featureId,
       entityId: link?.entityId,
       kind: previewKind(operation),
       label: operation.name,
+      source: operation.source,
       fragmentIds: link?.fragmentIds ?? [],
+      paths: buildPreviewPaths(operation, previewId, fragment, entity),
       warnings,
     });
   });

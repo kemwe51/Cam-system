@@ -80,6 +80,27 @@ export function loadImportSession(importId: string): Promise<ImportSessionRecord
 }
 
 export function generateDraftPlan(part: PartInput): Promise<DraftCamPlan> {
+  return fetchJson<DraftCamPlan>('/operations/generate', {
+    method: 'POST',
+    body: JSON.stringify(part),
+  });
+}
+
+export function regenerateDraftOperations(
+  plan: DraftCamPlan,
+  options?: { selectedFeatureIds?: string[]; preserveFrozenEdited?: boolean },
+): Promise<DraftCamPlan> {
+  return fetchJson<DraftCamPlan>('/operations/regenerate', {
+    method: 'POST',
+    body: JSON.stringify({
+      plan,
+      selectedFeatureIds: options?.selectedFeatureIds ?? [],
+      preserveFrozenEdited: options?.preserveFrozenEdited ?? true,
+    }),
+  });
+}
+
+export function generateLegacyDraftPlan(part: PartInput): Promise<DraftCamPlan> {
   return fetchJson<DraftCamPlan>('/plan', {
     method: 'POST',
     body: JSON.stringify(part),

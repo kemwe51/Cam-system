@@ -2,9 +2,9 @@
 
 Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop CAM workflow focused on 2D and 2.5D milling.
 
-## DXF & 2D Geometry Pipeline v4
+## CAM Operations v5
 
-This milestone moves the repo from a structured-plan workbench into a more geometry-aware authoring foundation while staying explicit about what is still derived, foundational, or not implemented yet.
+This milestone moves the repo from a geometry-aware authoring foundation into a first real deterministic CAM-authoring layer for imported 2D geometry while staying explicit about what is still preview-only, review-required, or not implemented yet.
 
 ### What is implemented now
 
@@ -16,6 +16,11 @@ This milestone moves the repo from a structured-plan workbench into a more geome
   - explicit imported geometry, extracted feature, and operation-preview modeling on top of the existing `ImportedModel` / `ModelEntity` / `ModelView` contracts
   - stable ids for source geometry, extracted features, plan features, and previews so mappings remain durable across import → plan → review
   - viewport fragments now distinguish raw imported geometry, extracted feature overlays, and operation preview overlays
+- **CAM Operations v5 deterministic planning**
+  - outside contour rough + finish generation where outer profile intent is clear
+  - conservative inside contour, pocket, slot, and grouped-hole generation from extracted 2D geometry
+  - generated/manual/edited operation source tracking with freeze-for-regeneration support
+  - planning warnings, machining assumptions, tool-class selection reasons, and linked preview metadata carried with operations
 - **Importer workflow v4**
   - real JSON importer returning structured source metadata, warnings, imported model data, and deterministic part input when available
   - real DXF importer for a practical planar subset with explicit unsupported-entity warnings
@@ -48,6 +53,8 @@ This milestone moves the repo from a structured-plan workbench into a more geome
   - per-operation warning badges
   - source geometry references in the feature inspector
   - manual reclassification for imported/inferred features (`contour`, `pocket`, `slot`, `hole group`, `ignore`, `unclassified`) with explicit draft warnings
+  - regenerate generated operations from the whole plan or a selected feature while preserving manual operations and frozen edits
+  - operation source badges (`generated`, `manual`, `edited`) and explicit regeneration protection for programmer-in-the-loop authoring
   - project-level unsaved summary and revision summary
 - **AI advisory review context upgrade**
   - review context now includes DXF source metadata, extraction warnings, open/closed profile counts, unclassified geometry summary, and manual reclassification context
@@ -65,7 +72,7 @@ This repository still does **not** implement:
 Important honesty boundary:
 
 - The viewport is a **derived visualization from imported geometry, extracted feature overlays, structured JSON, and deterministic plan state**.
-- Operation preview is an **operation preview**, not a toolpath.
+- Operation preview is an **operation preview**, not a toolpath or final NC motion.
 - DXF support is **practical-subset only**, not full DXF support.
 - STEP remains a **workflow-level placeholder only**.
 - AI review is **advisory only** and never overrides deterministic planning authority.
@@ -146,6 +153,8 @@ Current import routes:
 - `POST /imports/dxf`
 - `POST /imports/step`
 - `GET /imports/:id`
+- `POST /operations/generate`
+- `POST /operations/regenerate`
 
 Current JSON import behavior:
 
@@ -158,7 +167,7 @@ Current DXF behavior:
 
 - accepts pasted ASCII DXF text payloads
 - supports `LINE`, `ARC`, `CIRCLE`, `POINT`, `TEXT` / `MTEXT` metadata, `LWPOLYLINE`, and `POLYLINE`
-- builds a 2D geometry document, a tolerance-aware geometry graph, and first-pass extracted feature candidates
+- builds a 2D geometry document, a tolerance-aware geometry graph, conservative contour hierarchy, grouped-hole candidates, and extracted feature candidates
 - returns deterministic part input only with explicit planning-default assumptions for stock thickness and feature depths
 - preserves unsupported entities as warnings instead of silently discarding them
 
@@ -238,3 +247,21 @@ The viewport now separates:
 - operation preview layer
 
 These are all derived from imported 2D geometry, structured source metadata, and deterministic planning data. They are intentionally labeled as imported geometry, extracted features, and operation preview only.
+
+Current CAM Operations v5 planning subset:
+
+- outside contour operations
+- inside contour review contours
+- conservative pocket operations
+- conservative slot operations
+- grouped drilling operations from circles by diameter/pattern
+- marking-only engraving operations from text entities
+
+How features become operations:
+
+1. import practical-subset DXF or structured JSON
+2. build 2D graph / chain / loop / region model
+3. extract conservative machining-intent candidates with confidence + warnings
+4. normalize approved feature classifications into deterministic operations
+5. derive linked operation previews for workbench review
+6. allow manual edits, reclassification, and regeneration before approval

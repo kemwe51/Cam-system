@@ -19,6 +19,7 @@ describe('viewportScene', () => {
     expect(scene.stockEntity?.kind).toBe('stock');
     expect(scene.featureLayer.entities.length).toBeGreaterThan(0);
     expect(scene.operationPreviewLayer.previews.length).toBe(plan.operations.length);
+    expect(scene.operationPreviewLayer.previews[0]?.paths[0]?.segments.length).toBeGreaterThan(0);
     expect(scene.disclaimer).toContain('operation preview');
   });
 });

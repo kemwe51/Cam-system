@@ -166,18 +166,21 @@ function EntityMesh({
 }
 
 function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }: { preview: OperationPreview; entity: ModelEntity | undefined; fragment: ImportedModel['fragments'][number] | undefined; selected: boolean; onSelect: (operationId: string) => void }) {
-  const color = selected ? '#f8fafc' : preview.warnings.length > 0 ? '#f59e0b' : '#38bdf8';
+  const color = selected ? '#f8fafc' : preview.warnings.length > 0 ? '#f59e0b' : preview.source === 'manual' ? '#fb7185' : preview.source === 'edited' ? '#c084fc' : '#38bdf8';
   const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
   const size = fragment?.size ?? entity?.bounds.size ?? [12, 12, 1.5];
   const select = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation();
     onSelect(preview.operationId);
   };
+  const firstPath = preview.paths[0];
+  const firstSegment = firstPath?.segments[0];
+  const firstSegmentPoints = firstSegment?.points ?? [];
 
-  if (preview.kind === 'contour_path') {
+  if (preview.kind === 'contour_path' && firstSegmentPoints.length >= 2) {
     return (
-      <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.2]} onClick={select}>
-        <Line points={bodyOutlinePoints([Math.max(size[0] * 0.95, 4), Math.max(size[1] * 0.95, 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
+      <group key={preview.id} position={[0, 0, 0]} onClick={select}>
+        <Line points={firstSegmentPoints} color={color} lineWidth={selected ? 3.4 : 2.4} />
       </group>
     );
   }
@@ -195,16 +198,16 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
 
   if (preview.kind === 'edge_marker') {
     return (
-      <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.2]} onClick={select}>
-        <Line points={bodyOutlinePoints([Math.max(size[0], 4), Math.max(size[1], 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
+      <group key={preview.id} position={[0, 0, 0]} onClick={select}>
+        <Line points={firstSegment?.points ?? bodyOutlinePoints([Math.max(size[0], 4), Math.max(size[1], 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
       </group>
     );
   }
 
   return (
     <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.4]} onClick={select}>
-      <mesh>
-        <boxGeometry args={[Math.max(size[0] * 0.9, 4), Math.max(size[1] * 0.9, 4), 0.6]} />
+        <mesh>
+          <boxGeometry args={[Math.max(size[0] * 0.9, 4), Math.max(size[1] * 0.9, 4), 0.6]} />
         <meshStandardMaterial color={color} transparent opacity={0.18} wireframe />
       </mesh>
       <Text position={[0, 0, 1.1]} fontSize={Math.max(size[1] * 0.18, 1.6)} maxWidth={size[0]} color={color} anchorX="center" anchorY="middle">
@@ -230,7 +233,7 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
   const wireframe = viewMode === 'wireframe';
   const showImportedGeometry = true;
   const showFeatures = viewMode === 'shaded' || viewMode === 'wireframe' || viewMode === 'features';
-  const showOperationPreview = viewMode === 'operation_preview' || Boolean(selectedOperationId);
+  const showOperationPreview = viewMode === 'operation_preview' || Boolean(selectedOperationId) || Boolean(selectedFeatureId);
   const stockOpacity = viewMode === 'stock' ? 0.42 : 0.22;
 
   return (
@@ -281,11 +284,11 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
                   key={preview.id}
                   preview={preview}
                   entity={preview.entityId ? entityById.get(preview.entityId) : undefined}
-                  fragment={fragmentById.get(preview.fragmentIds[0] ?? '')}
-                  selected={selectedOperationId === preview.operationId}
-                  onSelect={onSelectOperation}
-                />
-              ))
+                   fragment={fragmentById.get(preview.fragmentIds[0] ?? '')}
+                   selected={selectedOperationId === preview.operationId || selectedFeatureId === preview.featureId}
+                   onSelect={onSelectOperation}
+                 />
+               ))
             : null}
           {scene.selectionLayer.entity ? (
             <group position={scene.selectionLayer.entity.bounds.center}>

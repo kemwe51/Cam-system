@@ -103,7 +103,83 @@ export const featureKindSchema = z.enum([
   'engraving',
 ]);
 
+export const featureClassificationSchema = z.enum([
+  'outside_contour',
+  'inside_contour',
+  'pocket',
+  'hole_group',
+  'slot',
+  'engraving',
+  'unclassified',
+  'ignored',
+]);
+
 export const riskLevelSchema = z.enum(['low', 'medium', 'high']);
+
+export const machiningIntentSchema = z.object({
+  featureId: z.string().min(1),
+  classification: featureClassificationSchema,
+  confidence: z.number().min(0).max(1).default(1),
+  requiresReview: z.boolean().default(false),
+  rationale: z.string().min(1),
+  source: z.enum(['structured', 'extracted_feature', 'manual_override']).default('structured'),
+});
+
+export const toolClassSchema = z.enum([
+  'face_mill',
+  'contour_end_mill',
+  'pocket_end_mill',
+  'drill',
+  'chamfer_tool',
+  'engraving_tool',
+]);
+
+const previewPointSchema = z.tuple([z.number(), z.number(), z.number()]);
+
+export const previewPathSegmentSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['line', 'arc', 'marker', 'region', 'centerline']),
+  points: z.array(previewPointSchema).min(1),
+  closed: z.boolean().default(false),
+  label: z.string().min(1).optional(),
+});
+
+export const previewPathSchema = z.object({
+  id: z.string().min(1),
+  operationId: z.string().min(1),
+  featureId: z.string().min(1),
+  kind: z.literal('operation_preview').default('operation_preview'),
+  label: z.string().min(1),
+  segments: z.array(previewPathSegmentSchema).default([]),
+  source: z.enum(['generated', 'manual']).default('generated'),
+});
+
+export const toolSelectionReasonSchema = z.object({
+  toolClass: toolClassSchema,
+  reason: z.string().min(1),
+  diameterBasisMm: nonNegativeNumber.optional(),
+  depthBasisMm: nonNegativeNumber.optional(),
+});
+
+export const planningWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  severity: riskLevelSchema.default('medium'),
+  reviewRequired: z.boolean().default(true),
+});
+
+export const machiningAssumptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  reviewRequired: z.boolean().default(true),
+});
+
+export const operationLinkSchema = z.object({
+  featureId: z.string().min(1),
+  extractedFeatureId: z.string().min(1).optional(),
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+});
 
 export const normalizedFeatureSchema = z.object({
   id: z.string().min(1),
@@ -122,6 +198,7 @@ export const normalizedFeatureSchema = z.object({
   warnings: z.array(z.string()).default([]),
   origin: featureOriginSchema.default('structured'),
   classificationState: featureClassificationStateSchema.default('automatic'),
+  machiningIntent: machiningIntentSchema.optional(),
 });
 
 export const toolTypeSchema = z.enum(['face_mill', 'flat_end_mill', 'drill', 'chamfer_mill', 'engraver']);
@@ -165,6 +242,19 @@ export const setupSchema = z.object({
 
 export const operationKindSchema = z.enum(['face', 'profile', 'pocket', 'slot', 'drill', 'chamfer', 'engrave']);
 
+export const operationCandidateSchema = z.object({
+  id: z.string().min(1),
+  featureId: z.string().min(1),
+  kind: operationKindSchema,
+  name: z.string().min(1),
+  strategy: z.string().min(1),
+  toolClass: toolClassSchema,
+  estimatedMinutes: positiveNumber,
+  warnings: z.array(planningWarningSchema).default([]),
+  assumptions: z.array(machiningAssumptionSchema).default([]),
+  machiningIntent: machiningIntentSchema,
+});
+
 export const operationSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -180,16 +270,30 @@ export const operationSchema = z.object({
   estimatedMinutes: positiveNumber,
   enabled: z.boolean().default(true),
   origin: z.enum(['automatic', 'manual']).default('automatic'),
+  source: z.enum(['generated', 'manual', 'edited']).default('generated'),
   order: z.number().int().nonnegative().default(0),
   isDirty: z.boolean().default(false),
+  frozen: z.boolean().default(false),
+  toolClass: toolClassSchema.optional(),
+  toolSelectionReason: toolSelectionReasonSchema.optional(),
+  machiningIntent: machiningIntentSchema.optional(),
+  links: z.array(operationLinkSchema).default([]),
+  warnings: z.array(planningWarningSchema).default([]),
+  assumptions: z.array(machiningAssumptionSchema).default([]),
+});
+
+export const generatedOperationSchema = operationSchema.extend({
+  origin: z.literal('automatic'),
+  source: z.literal('generated'),
 });
 
 export const operationGroupSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  kind: z.enum(['setup', 'feature']),
+  kind: z.enum(['setup', 'feature', 'operation_type']),
   setupId: z.string().min(1),
   featureId: z.string().min(1).optional(),
+  category: z.enum(['Contours', 'Holes', 'Pockets', 'Slots', 'Manual', 'Other']).optional(),
   operationIds: z.array(z.string().min(1)).default([]),
   expanded: z.boolean().default(true),
 });
@@ -516,14 +620,23 @@ export type ChecklistItem = z.infer<typeof checklistItemSchema>;
 export type ContourInput = z.infer<typeof contourSchema>;
 export type DraftCamPlan = z.infer<typeof draftCamPlanSchema>;
 export type FeatureKind = z.infer<typeof featureKindSchema>;
+export type FeatureClassification = z.infer<typeof featureClassificationSchema>;
 export type HoleGroupInput = z.infer<typeof holeGroupSchema>;
 export type MachineProfile = z.infer<typeof machineProfileSchema>;
+export type MachiningAssumption = z.infer<typeof machiningAssumptionSchema>;
+export type MachiningIntent = z.infer<typeof machiningIntentSchema>;
 export type NormalizedFeature = z.infer<typeof normalizedFeatureSchema>;
+export type GeneratedOperation = z.infer<typeof generatedOperationSchema>;
 export type Operation = z.infer<typeof operationSchema>;
+export type OperationCandidate = z.infer<typeof operationCandidateSchema>;
 export type OperationGroup = z.infer<typeof operationGroupSchema>;
 export type OperationKind = z.infer<typeof operationKindSchema>;
+export type OperationLink = z.infer<typeof operationLinkSchema>;
 export type PartInput = z.infer<typeof partInputSchema>;
+export type PlanningWarning = z.infer<typeof planningWarningSchema>;
 export type PocketInput = z.infer<typeof pocketSchema>;
+export type PreviewPath = z.infer<typeof previewPathSchema>;
+export type PreviewPathSegment = z.infer<typeof previewPathSegmentSchema>;
 export type ProjectDraft = z.infer<typeof projectDraftSchema>;
 export type ProjectMetadata = z.infer<typeof projectMetadataSchema>;
 export type ProjectSummary = z.infer<typeof projectSummarySchema>;
@@ -534,5 +647,7 @@ export type SelectedEntity = z.infer<typeof selectedEntitySchema>;
 export type Setup = z.infer<typeof setupSchema>;
 export type SlotInput = z.infer<typeof slotSchema>;
 export type Tool = z.infer<typeof toolSchema>;
+export type ToolClass = z.infer<typeof toolClassSchema>;
 export type ToolLibrary = z.infer<typeof toolLibrarySchema>;
+export type ToolSelectionReason = z.infer<typeof toolSelectionReasonSchema>;
 export type ToolType = z.infer<typeof toolTypeSchema>;
