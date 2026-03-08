@@ -40,6 +40,8 @@ The desktop shell now has explicit workbench regions for:
 
 This is not a toy single-pane demo. It is a real desktop shell structure intended to grow into a serious CAM workbench.
 
+A static layout reference is included at `docs/assets/native-desktop-workbench-layout.svg` for environments where Qt is not installed and the native shell cannot be launched yet.
+
 ### STEP viewer integration foundation
 
 This milestone does **not** fake STEP loading.

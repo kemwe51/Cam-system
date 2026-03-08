@@ -93,8 +93,9 @@ function matchRoute(pathname: string, prefix: string): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
-function matchProjectWorkbenchRoute(pathname: string): string | null {
-  const match = /^\/projects\/([^/]+)\/native-workbench$/.exec(pathname);
+function matchProjectSubRoute(pathname: string, suffix: string): string | null {
+  const safeSuffix = suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`^/projects/([^/]+)/${safeSuffix}$`).exec(pathname);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
@@ -199,7 +200,7 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
         return;
       }
 
-      const nativeWorkbenchProjectId = matchProjectWorkbenchRoute(url.pathname);
+      const nativeWorkbenchProjectId = matchProjectSubRoute(url.pathname, 'native-workbench');
       if (request.method === 'GET' && nativeWorkbenchProjectId) {
         const project = await projectRepository.load(nativeWorkbenchProjectId);
         if (!project) {

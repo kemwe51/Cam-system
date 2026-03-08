@@ -35,13 +35,13 @@ ViewportFoundationWidget::ViewportFoundationWidget(QWidget* parent)
   frameLayout->addWidget(headline);
 
 #ifdef CAM_DESKTOP_HAS_OCCT
-  foundationLabel_ = new QLabel(QStringLiteral("Open CASCADE was found at configure time. This widget is the handoff point for AIS_InteractiveContext, V3d_View, and XDE-backed STEP loading."), frame);
+  integrationStatusLabel_ = new QLabel(QStringLiteral("Open CASCADE was found at configure time. This widget is the handoff point for AIS_InteractiveContext, V3d_View, and XDE-backed STEP loading."), frame);
 #else
-  foundationLabel_ = new QLabel(QStringLiteral("Open CASCADE was not found in this environment. The widget stays explicit about the future handoff points for STEP loading, XDE document mapping, selection sync, and viewport commands."), frame);
+  integrationStatusLabel_ = new QLabel(QStringLiteral("Open CASCADE was not found in this environment. The widget stays explicit about the future handoff points for STEP loading, XDE document mapping, selection sync, and viewport commands."), frame);
 #endif
-  foundationLabel_->setStyleSheet(QStringLiteral("color: #cbd5e1;"));
-  foundationLabel_->setWordWrap(true);
-  frameLayout->addWidget(foundationLabel_);
+  integrationStatusLabel_->setStyleSheet(QStringLiteral("color: #cbd5e1;"));
+  integrationStatusLabel_->setWordWrap(true);
+  frameLayout->addWidget(integrationStatusLabel_);
 
   selectionLabel_ = new QLabel(QStringLiteral("Selection sync: model tree ⇄ features ⇄ operations ⇄ viewport ⇄ inspector"), frame);
   selectionLabel_->setStyleSheet(QStringLiteral("color: #93c5fd; font-weight: 600;"));

@@ -27,7 +27,9 @@ WorkbenchProjectDocument ProjectFileService::createEmpty() {
 WorkbenchProjectDocument ProjectFileService::load(const QString& filePath) {
   QFile file(filePath);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    throw std::runtime_error(QStringLiteral("Unable to open project file: %1").arg(filePath).toStdString());
+    const auto message = QString("Unable to open project file: %1").arg(filePath);
+    const auto utf8 = message.toUtf8();
+    throw std::runtime_error(utf8.constData());
   }
 
   const auto root = QJsonDocument::fromJson(file.readAll()).object();
@@ -48,7 +50,9 @@ WorkbenchProjectDocument ProjectFileService::load(const QString& filePath) {
 void ProjectFileService::save(WorkbenchProjectDocument& document, const QString& filePath) {
   QFile file(filePath);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-    throw std::runtime_error(QStringLiteral("Unable to save project file: %1").arg(filePath).toStdString());
+    const auto message = QString("Unable to save project file: %1").arg(filePath);
+    const auto utf8 = message.toUtf8();
+    throw std::runtime_error(utf8.constData());
   }
 
   QJsonObject root;

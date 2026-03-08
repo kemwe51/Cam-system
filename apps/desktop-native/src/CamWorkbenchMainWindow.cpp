@@ -28,8 +28,8 @@ constexpr auto kRecentFilesKey = "desktopNative/recentFiles";
 }
 
 CamWorkbenchMainWindow::CamWorkbenchMainWindow(QWidget* parent)
-  : QMainWindow(parent)
-  , currentProject_(ProjectFileService::createEmpty()) {
+  : QMainWindow(parent) {
+  currentProject_ = ProjectFileService::createEmpty();
   setWindowTitle(QStringLiteral("CAM System Native Workbench Foundation"));
   resize(1600, 960);
   setDockOptions(QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks | QMainWindow::AnimatedDocks);
@@ -240,11 +240,11 @@ void CamWorkbenchMainWindow::syncUiToDocument() {
     QStringLiteral("AI review stays advisory only. The native shell is expected to display structured review output from the existing companion pipeline instead of creating manufacturing authority."));
   metadataView_->setPlainText(
     QStringLiteral("schemaVersion: %1\nprojectFile: %2\nbridgeSnapshotPath: %3\nstep: %4\ndxf: %5")
-      .arg(currentProject_.schemaVersion,
-        currentProject_.projectFilePath,
-        currentProject_.bridgeSnapshotPath,
-        currentProject_.lastImportedStepPath,
-        currentProject_.lastImportedDxfPath));
+      .arg(currentProject_.schemaVersion)
+      .arg(currentProject_.projectFilePath)
+      .arg(currentProject_.bridgeSnapshotPath)
+      .arg(currentProject_.lastImportedStepPath)
+      .arg(currentProject_.lastImportedDxfPath));
 }
 
 void CamWorkbenchMainWindow::logMessage(const QString& message) {

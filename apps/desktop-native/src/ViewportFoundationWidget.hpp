@@ -18,5 +18,5 @@ private:
   QLabel* titleLabel_ = nullptr;
   QLabel* modeLabel_ = nullptr;
   QLabel* selectionLabel_ = nullptr;
-  QLabel* foundationLabel_ = nullptr;
+  QLabel* integrationStatusLabel_ = nullptr;
 };
