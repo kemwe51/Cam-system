@@ -8,11 +8,14 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
-    "test": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai && npm run test --workspaces --if-present",
-    "test:all": "npm run test --workspaces --if-present",
-    "dev:api": "npm run dev --workspace @cam/api",
-    "dev:web": "npm run dev --workspace @cam/web"
+    "build:packages": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai",
+    "build": "npm run build:packages && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "test": "npm run build:packages && npm run test:workspaces",
+    "test:all": "npm run test:workspaces",
+    "dev": "npm run dev:web",
+    "dev:api": "npm run build:packages && npm run dev --workspace @cam/api",
+    "dev:web": "npm run build:packages && npm run dev --workspace @cam/web"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

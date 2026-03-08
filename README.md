@@ -93,6 +93,14 @@ npm run test
 
 ## Development
 
+Workspace packages resolve through their built `dist/` entries for runtime usage. The stable developer workflow is:
+
+1. install dependencies once with `npm install`
+2. build workspace libraries with `npm run build:packages`
+3. run the API or web app from the root scripts so they always start from freshly built package output
+
+Production builds use dedicated `tsconfig.build.json` files so test files are excluded from emitted `dist/` output. The regular `tsconfig.json` files stay available for editor/test/dev type checking.
+
 Run the API:
 
 ```bash
@@ -106,6 +114,23 @@ npm run dev:web
 ```
 
 The web app defaults to `http://localhost:3001` for API requests.
+
+### Root workspace scripts
+
+```bash
+npm run build:packages   # build shared workspace libraries only
+npm run build            # build libraries, then api and web
+npm run test             # rebuild libraries, then run all workspace tests
+npm run test:workspaces  # run workspace tests without rebuilding first
+npm run dev:api          # start API from a clean checkout after building libraries
+npm run dev:web          # start Vite web dev server after building libraries
+```
+
+Contributor caveat:
+
+- Runtime resolution stays intentionally honest: package `main` / `exports` point at built `dist/` files.
+- If you change code inside `packages/*` while `npm run dev:api` or `npm run dev:web` is already running, rebuild the libraries with `npm run build:packages` so the apps pick up the new package output.
+- Vitest continues to execute tests from source files; production builds no longer emit `*.test.*` artifacts.
 
 For production-style API deployment, set `CAM_WEB_ORIGIN` explicitly so the API only accepts the intended web origin.
 
