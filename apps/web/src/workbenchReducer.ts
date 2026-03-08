@@ -268,6 +268,7 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
     order: plan.operations.length,
     isDirty: true,
     frozen: true,
+    toolpathCandidateIds: [],
     links: baseOperation?.links ?? [{ featureId: feature.id, sourceGeometryRefs: feature.sourceGeometryRefs }],
     warnings: baseOperation?.warnings ?? [],
       assumptions: baseOperation?.assumptions ?? [],

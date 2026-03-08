@@ -33,7 +33,7 @@ The repo now includes `apps/desktop-native`, a Qt Widgets desktop shell foundati
 The desktop shell now has explicit workbench regions for:
 
 - **top command surface**: File/View commands and frequent toolbar actions
-- **left dock tabs**: Model tree, Features, Operations, Tools
+- **left dock tabs**: Model tree, Features, Operations, Tools, Toolpaths
 - **center viewport area**: STEP/OCCT viewer foundation widget inside a document tab area
 - **right dock**: Inspector / properties
 - **bottom tabs**: Warnings, Checklist, AI review, Logs / console, Project metadata
@@ -59,13 +59,16 @@ What exists now:
   - features
   - operations
   - tools
+  - toolpaths
   - inspector/checklist/warnings metadata
 - an Open CASCADE / XDE loading boundary that can:
   - accept a STEP file path
   - load an XDE document with `STEPCAFControl_Reader` in OCCT-enabled builds
   - extract a native STEP model tree with persistent OCCT label ids
+  - enumerate topology-backed `solid`, `shell`, `face`, `edge`, and `vertex` selection ids for the native tree/inspector
   - surface unresolved topology-link warnings without claiming finished geometry display
 - display-layer and link-mapping data in the bridge snapshot so the native shell can keep model geometry, operations, and future path-plan overlays separated in a professional desktop workbench
+- first deterministic toolpath-candidate browsing driven by the existing TypeScript planning stack
 
 What does **not** exist yet:
 
@@ -84,6 +87,7 @@ The current TypeScript stack remains authoritative for:
 
 - import normalization
 - deterministic feature and operation planning
+- deterministic toolpath-candidate generation
 - review/checklist/risk state
 - AI advisory review payloads
 - project/import persistence contracts
@@ -94,12 +98,12 @@ The current TypeScript stack remains authoritative for:
 
 The snapshot includes:
 
-- stable ids for project, source, model entities, features, operations, tools, and previews
+- stable ids for project, source, model entities, features, operations, tools, toolpath candidates, and previews
 - node collections that map cleanly onto native workbench panels
-- selection-link records for model tree ⇄ features ⇄ operations ⇄ tools ⇄ viewport ⇄ inspector synchronization
+- selection-link records for model tree ⇄ features ⇄ operations ⇄ tools ⇄ toolpaths ⇄ viewport ⇄ inspector synchronization
 - explicit link mappings with `resolved` / `partial` / `unresolved` status
 - display-layer metadata for model geometry, feature overlays, operation overlays, future path plans, and inspection state
-- topology-reference placeholders that stay honest when only source-geometry linkage exists
+- topology-reference placeholders and toolpath links that stay honest when only source-geometry linkage exists
 
 `apps/api` now exposes:
 
@@ -181,12 +185,13 @@ Implemented now:
 - TypeScript-to-native workbench bridge snapshot consumption
 - selection synchronization between native panels
 - visibility-command hooks for future display-object lifecycle control
-- OCCT/XDE STEP loading boundary with native STEP model-tree population in OCCT-enabled builds
+- OCCT/XDE STEP loading boundary with native STEP model-tree and topology-selection metadata population in OCCT-enabled builds
+- deterministic toolpath candidates surfaced as native browser nodes through the bridge snapshot
 
 Still foundational:
 
 - AIS/V3d viewport object rendering
 - topology-backed viewport selection
-- native path visualization
+- rendered native path visualization and highlight
 - postprocessing
-- production CAM-core depth
+- production-grade CAM-core depth, simulation, and postprocessing quality

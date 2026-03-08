@@ -4,9 +4,9 @@ Production-oriented CAM monorepo for a programmer-in-the-loop workflow focused o
 
 The product direction now treats a **native Windows desktop workbench** as the primary professional CAM shell. The existing web app remains useful as a companion workflow for development, review, collaboration, and rapid iteration, but it is no longer the intended final primary shell for professional CAM programming.
 
-## Initial Path Planning Layer v7
+## Native STEP CAM Workbench & First Toolpath Kernel Foundation v9
 
-This milestone moves the repo from a geometry-aware operation-preview foundation into a first deterministic path-planning layer for imported 2D and foundational 2.5D milling work while staying explicit about what is still review-only, conservative, or not implemented yet.
+This milestone moves the repo from a geometry-aware operation-preview foundation into a first deterministic **toolpath-kernel candidate** layer plus a stronger native STEP workbench bridge while staying explicit about what is still review-only, conservative, or not implemented yet.
 
 ### What is implemented now
 
@@ -23,10 +23,11 @@ This milestone moves the repo from a geometry-aware operation-preview foundation
   - conservative inside contour, pocket, slot, and grouped-hole generation from extracted 2D geometry
   - generated/manual/edited operation source tracking with freeze-for-regeneration support
   - planning warnings, machining assumptions, tool-class selection reasons, linked preview metadata, foundational depth metadata, and deterministic path-plan candidates carried with operations
-- **Deterministic path-planning foundation**
-  - shared schemas now include `PathPlan`, `PathPlanSegment`, `LinearPathSegment`, `ArcPathSegment`, `RapidMove`, `FeedMove`, `PlungeMove`, `RetractMove`, `LeadInPlan`, `LeadOutPlan`, `EntryStrategy`, `ExitStrategy`, `ClearanceStrategy`, `PathOrderingHint`, `PathPlanWarning`, `PathPlanAssumption`, `OperationPathProfile`, and `PathPreviewMode`
-  - contour, drill, pocket, and slot operations now carry first deterministic path-plan candidates with entry, exit, clearance, retract, ordering, and pass-depth metadata
-  - generated path plans remain deterministic machining candidates only; they are still not verified cutter compensation, simulation, or production NC output
+- **Deterministic path-planning + toolpath-kernel foundation**
+  - shared schemas now include `PathPlan`, `PathPlanSegment`, `OperationPathProfile`, `ToolpathCandidate`, `ToolpathDepthLayer`, `ToolpathPass`, and `ToolpathPrimitive`
+  - contour, drill, pocket, and slot operations now carry deterministic path-plan candidates with entry, exit, clearance, retract, ordering, and pass-depth metadata
+  - plans also derive explicit **toolpath candidates** with cutter-centerline segments, depth layers, primitive kinds (`contour_pass`, `drill_cycle`, `pocket_pass`, `slot_pass`), and operation/source-geometry linkage
+  - generated toolpath candidates remain deterministic machining candidates only; they are still not verified cutter compensation, simulation, or production NC output
 - **Setup / work-offset foundation**
   - setup definitions now carry practical planning metadata for orientation, work offset, machine coordinate reference, clearance reference, stock reference, and setup warnings
   - current scope remains a top-side 3-axis / indexed-2.5D planning foundation so future multi-setup work can extend the same contracts
@@ -66,8 +67,8 @@ This milestone moves the repo from a geometry-aware operation-preview foundation
 - **Native Windows CAM workbench foundation**
   - new `apps/desktop-native` Qt Widgets shell with a professional docked CAM layout
   - main menu, toolbar, keyboard shortcut routing, status bar, recent files, visibility hooks, and local `.camproj.json` project shell storage
-  - native consumption of `native-workbench-v1` bridge snapshots for model/features/operations/tools tree population and selection synchronization
-  - concrete Open CASCADE / XDE STEP loading boundary that can load STEP document structure in OCCT-enabled Windows builds while still staying honest about unfinished viewport rendering
+  - native consumption of `native-workbench-v1` bridge snapshots for model/features/operations/tools/**toolpaths** tree population and selection synchronization
+  - concrete Open CASCADE / XDE STEP loading boundary that can load STEP document structure plus topology-backed metadata (`solid`, `shell`, `face`, `edge`, `vertex`) in OCCT-enabled Windows builds while still staying honest about unfinished viewport rendering
   - desktop bridge snapshot contracts in `@cam/model` plus `GET /projects/:projectId/native-workbench` for native-shell consumption
 - **Viewport pipeline v4**
   - explicit scene builder layered into imported geometry, stock, extracted features, selection, and operation preview layers
@@ -93,7 +94,7 @@ This repository still does **not** implement:
 
 - TypeScript-side real STEP parsing or STEP-derived machining
 - a B-Rep, solid-model, or CAD kernel
-- verified toolpath generation or machining simulation
+- verified industrial toolpath generation, machining simulation, or collision checking
 - true 2.5D feature depth extraction from solids or verified section data
 - postprocessing or production G-code output
 - feeds/speeds databases, holder assemblies, or collision checking
@@ -101,11 +102,11 @@ This repository still does **not** implement:
 Important honesty boundary:
 
 - The viewport is a **derived visualization from imported geometry, extracted feature overlays, structured JSON, and deterministic plan state**.
-- Deterministic path plans are **machining-path candidates for review**, not a final toolpath, postprocessed program, or verified NC motion.
-- Pass-depth plans, lead-in/lead-out hints, clearance/retract levels, and path ordering are **planning hints only**, not final calculated cutter passes or simulation.
+- Deterministic path plans are **planning intent and centerline candidate inputs**, not a final toolpath, postprocessed program, or verified NC motion.
+- Deterministic toolpath candidates are **first kernel-level cutter-centerline candidates** with pass/depth structure, not verified cutter compensation, holder-aware motion, or final NC.
 - DXF support is **practical-subset only**, not full DXF support.
 - STEP remains a **workflow-level placeholder** in the TypeScript importers, while the native app now adds a real OCCT/XDE loading path for local Windows builds that have OCCT installed.
-- the native desktop app is a **real professional shell foundation** with bridge-driven tree/selection synchronization, not yet a finished STEP viewer or production CAM core
+- the native desktop app is a **real professional shell foundation** with bridge-driven tree/selection synchronization, topology metadata, and toolpath candidate browsing, not yet a finished STEP viewer or production CAM core
 - AI review is **advisory only** and never overrides deterministic planning authority.
 
 ## Workspaces

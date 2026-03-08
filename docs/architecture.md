@@ -38,6 +38,7 @@ The deterministic engine owns:
 - operation proposals
 - tool and setup references
 - depth-aware operation profiles, pass-depth planning hints, deterministic path-plan candidates, and deterministic preservation of manual depth/path overrides
+- first deterministic toolpath-kernel candidates derived from operations, path plans, and source geometry links
 - risk creation
 - checklist creation
 - cycle time estimation
@@ -50,6 +51,7 @@ The model/import pipeline owns:
 - source/model/view entity ids
 - feature-to-geometry links
 - operation preview contracts and path-plan-aware viewport derivation
+- native-workbench snapshot nodes, selection links, toolpath-candidate links, and unresolved topology mapping warnings
 - project/import/revision persistence records
 
 The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output final toolpaths, or generate G-code.
@@ -58,7 +60,7 @@ The native desktop shell is responsible for:
 
 - professional Windows workbench UX
 - command routing, recent files, local project storage, and dock orchestration
-- future Open CASCADE viewport hosting and selection behavior
+- native STEP/XDE session browsing, topology-backed selection metadata, and future Open CASCADE viewport hosting
 - future large-model handling, inspection ergonomics, and desktop interaction quality
 
 The current TypeScript stack remains responsible for:
@@ -66,10 +68,11 @@ The current TypeScript stack remains responsible for:
 - deterministic planning authority
 - import normalization
 - extracted feature and operation models
+- deterministic toolpath-candidate generation and bridge payloads
 - advisory AI review payload generation
 - project/import persistence contracts
 
-## Initial Path Planning Layer v7
+## Native STEP CAM Workbench & Toolpath Kernel v9
 
 `@cam/geometry2d` is now the internal contract boundary for imported planar source data.
 
@@ -108,6 +111,10 @@ Current model vocabulary includes:
 - `OperationPathProfile`
 - `PathPlan`
 - `PathPlanSegment`
+- `ToolpathCandidate`
+- `ToolpathDepthLayer`
+- `ToolpathPass`
+- `ToolpathPrimitive`
 - `PreviewPath`
 - `ViewPreset`
 - `ViewMode`
@@ -126,8 +133,9 @@ The new native workbench foundation consumes a `native-workbench-v1` bridge snap
 - model entities
 - extracted manufacturing features
 - generated operations
+- generated toolpath candidates
 - operation previews
-- selection synchronization between tree/feature/operation/tool/viewport surfaces
+- selection synchronization between tree/feature/operation/tool/toolpath/viewport surfaces
 
 ## Import workflow
 

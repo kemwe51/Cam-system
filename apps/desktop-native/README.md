@@ -7,7 +7,7 @@ This directory contains the native Windows-first **professional CAM workbench fo
 - real **Qt Widgets** application structure for a professional CAM-style main window
 - persistent **main menu + toolbar + status bar** with command routing and keyboard shortcuts
 - docked workbench layout with:
-  - left tabs for **Model tree**, **Features**, **Operations**, and **Tools**
+  - left tabs for **Model tree**, **Features**, **Operations**, **Tools**, and **Toolpaths**
   - center **viewport foundation** area inside a future multi-document/tabbed workspace
   - right **Inspector** dock
   - bottom tabs for **Warnings**, **Checklist**, **AI review**, **Logs / console**, and **Project metadata**
@@ -16,17 +16,19 @@ This directory contains the native Windows-first **professional CAM workbench fo
 - local **import STEP** / **import DXF** file dialogs
 - recent-files persistence through `QSettings`
 - native consumption of `native-workbench-v1` nodes, link mappings, display layers, warnings, and selection links
-- selection synchronization across model tree, features, operations, tools, inspector, and viewport status messaging
+- selection synchronization across model tree, features, operations, tools, toolpaths, inspector, and viewport status messaging
 - visibility hooks for **hide / show all / isolate** commands wired into native workbench state
-- explicit **Open CASCADE / XDE** loading boundary that can load STEP document structure in OCCT-enabled builds and populate a native STEP model tree
+- explicit **Open CASCADE / XDE** loading boundary that can load STEP document structure in OCCT-enabled builds, populate a native STEP model tree, and enumerate topology-backed `solid` / `shell` / `face` / `edge` / `vertex` selection ids
+- bridge-linked **toolpath candidate** browsing with first-pass layer/pass/primitive metadata in the native shell
 - concrete viewport/display architecture boundaries for future AIS display objects, selection/highlight routing, and path-plan overlays
 
 ## What remains foundational on purpose
 
 - Open CASCADE **viewport rendering** is **not** fully wired yet
 - STEP/XDE **document loading** is wired for OCCT-enabled builds, but final viewport display-object creation is still pending
-- topology-based face/edge/solid **viewport selection/highlighting** is **not** implemented yet
+- topology-based face/edge/solid metadata is loaded, but **viewport selection/highlighting** is **not** implemented yet
 - deterministic planning still lives in the existing TypeScript engine and companion API
+- toolpath candidates are deterministic cutter-centerline candidates only; they are not compensated, simulated, or postprocessed NC
 - this shell does **not** claim production CAM parity, NC output, or a CAD kernel
 
 ## Build prerequisites
@@ -71,8 +73,8 @@ With Open CASCADE available through CMake package discovery:
 
 - the target compiles with `CAM_DESKTOP_HAS_OCCT=1`
 - STEP import attempts real `STEPCAFControl_Reader` + XDE document loading
-- the native model tree shows imported STEP/XDE structure metadata
-- the viewport still reports honestly that AIS/V3d display-object wiring is the remaining local integration step
+- the native model tree shows imported STEP/XDE structure metadata plus topology-backed selection ids
+- the viewport still reports honestly that AIS/V3d display-object wiring is the remaining local integration step before full rendered verification
 
 ## Launching the native shell on Windows
 
@@ -89,7 +91,8 @@ Recommended local flow:
 3. create or open a `.camproj.json` file
 4. attach a `native-workbench-v1` snapshot exported from the companion project flow
 5. import a STEP file for the native OCCT/XDE session when testing STEP loading locally
-6. use the docked workbench, inspector, and visibility hooks to review synchronization and unresolved links
+6. review model/features/operations/tools/toolpaths synchronization, topology-backed STEP selection rows, and unresolved mapping warnings in the inspector
+7. use hide/show/isolate hooks and view presets to verify workbench command routing
 
 ## Bridge to the existing TypeScript CAM stack
 
@@ -100,7 +103,7 @@ Expected responsibilities:
 - **TypeScript domain + engine**
   - import normalization
   - deterministic planning authority
-  - extracted features / operations / preview links
+  - extracted features / operations / toolpath candidate / preview links
   - AI advisory review payloads
 - **native desktop shell**
   - Windows workbench UX
@@ -108,7 +111,7 @@ Expected responsibilities:
   - docked authoring experience
   - bridge snapshot consumption
   - selection/link inspection
-  - OCCT/XDE session loading and future viewport/selection ownership
+  - OCCT/XDE session loading, topology selection metadata, and future viewport/selection ownership
 
 ## Honest milestone status
 
@@ -118,10 +121,11 @@ Fully implemented in this repo:
 - native bridge-snapshot consumption
 - selection/inspector synchronization across native panels
 - real OCCT/XDE STEP document loading path in OCCT-enabled builds
-- native STEP session metadata tree population
+- native STEP session metadata tree population with topology-backed selection ids
+- native toolpath-candidate tree population from the TypeScript bridge snapshot
 
 Partial / still local-prerequisite dependent:
 
 - OCCT build/runtime requires Qt + OCCT installed on Windows
 - STEP/XDE loading can run in those local builds, but final geometry display in the viewport still needs AIS/V3d hookup
-- topology-aware CAM authoring contracts exist through stable ids, link mappings, and unresolved-link warnings, but face/edge/solid viewport selection is still a follow-up milestone
+- topology-aware CAM authoring contracts exist through stable ids, link mappings, toolpath nodes, and unresolved-link warnings, but face/edge/solid viewport selection and rendered highlight are still follow-up milestones
