@@ -1,6 +1,8 @@
 # CAM System
 
-Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop CAM workflow focused on 2D and 2.5D milling.
+Production-oriented CAM monorepo for a programmer-in-the-loop workflow focused on 2D and 2.5D milling.
+
+The product direction now treats a **native Windows desktop workbench** as the primary professional CAM shell. The existing web app remains useful as a companion workflow for development, review, collaboration, and rapid iteration, but it is no longer the intended final primary shell for professional CAM programming.
 
 ## Initial Path Planning Layer v7
 
@@ -61,6 +63,11 @@ This milestone moves the repo from a geometry-aware operation-preview foundation
   - imported geometry panel with layers, entity counts, open/closed profile counts, and warnings
   - top-bar metadata for source type, model status, warnings, and unsaved state
   - local undo/redo for workbench edits
+- **Native Windows CAM workbench foundation**
+  - new `apps/desktop-native` Qt Widgets shell with a professional docked CAM layout
+  - main menu, toolbar, keyboard shortcut routing, status bar, recent files, and local `.camproj.json` project shell storage
+  - explicit Open CASCADE / STEP viewer handoff boundary without pretending STEP loading already works
+  - desktop bridge snapshot contracts in `@cam/model` plus `GET /projects/:projectId/native-workbench` for native-shell consumption
 - **Viewport pipeline v4**
   - explicit scene builder layered into imported geometry, stock, extracted features, selection, and operation preview layers
   - stable entity ids across rebuilds
@@ -97,12 +104,14 @@ Important honesty boundary:
 - Pass-depth plans, lead-in/lead-out hints, clearance/retract levels, and path ordering are **planning hints only**, not final calculated cutter passes or simulation.
 - DXF support is **practical-subset only**, not full DXF support.
 - STEP remains a **workflow-level placeholder only**.
+- the native desktop app is a **real shell foundation**, not yet a finished STEP viewer or production CAM core
 - AI review is **advisory only** and never overrides deterministic planning authority.
 
 ## Workspaces
 
 - `apps/web`: React + Vite CAM workbench UI
 - `apps/api`: HTTP API for imports, planning, persistence, review, and approval
+- `apps/desktop-native`: Qt Widgets native Windows workbench foundation for future professional desktop CAM workflows
 - `packages/shared`: shared domain types, Zod schemas, default catalog data
 - `packages/geometry2d`: 2D geometry document + graph model and DXF subset parsing
 - `packages/model`: geometry/model pipeline types and derived model helpers
@@ -159,6 +168,8 @@ npm run dev:web -- --host 0.0.0.0
 ```
 
 The web app defaults to `http://localhost:3001` for API requests.
+
+The native desktop foundation lives under `apps/desktop-native`. It is intentionally outside the npm build because it uses a Windows-first C++ / Qt toolchain. See `apps/desktop-native/README.md` for the current scope and Windows build prerequisites.
 
 ### Fresh-checkout reliability notes
 

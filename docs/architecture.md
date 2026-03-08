@@ -2,8 +2,9 @@
 
 ## Monorepo layout
 
-- `apps/web`: React + Vite CAM workbench optimized for mobile usability but arranged for desktop-class CAM authoring
+- `apps/web`: React + Vite companion workbench for rapid iteration, review, collaboration, and support workflows
 - `apps/api`: minimal Node HTTP API exposing import, planning, persistence, review, and approval routes
+- `apps/desktop-native`: Qt Widgets native Windows CAM workbench foundation with future Open CASCADE integration points
 - `packages/shared`: shared Zod schemas, deterministic planning contracts, machine/setup/tool catalog foundations
 - `packages/geometry2d`: practical 2D geometry document + graph domain and DXF subset parser
 - `packages/model`: geometry/model pipeline contracts shared by importers, API, viewport, and review context
@@ -11,6 +12,23 @@
 - `packages/ai`: advisory OpenAI Responses API shell returning structured review output only
 - `packages/importers`: importer interfaces, registry, JSON importer, practical DXF subset importer, and honest STEP workflow placeholder
 - `examples`: sample JSON part input used by the demo flow
+
+## Native desktop direction
+
+The professional CAM workbench is now intended to move toward a **native Windows desktop application** rather than treating the browser app as the final primary shell.
+
+Reason for the shift:
+
+- professional CAM authoring needs long-session desktop stability
+- large-model usability and future STEP/B-Rep viewing are better served by a native shell
+- Windows desktop conventions, keyboard-driven programming flow, and docked workbench ergonomics matter for serious CAM usage
+- future CAM-core expansion should not be constrained by a browser-first shell
+
+Current role split:
+
+- **native desktop app** = primary professional CAM workbench direction
+- **web app** = companion/support shell for development, review, collaboration, and rapid prototyping
+- **TypeScript domain + engine + API** = current authoritative planning, import, persistence, and review backbone
 
 ## Responsibility split
 
@@ -35,6 +53,21 @@ The model/import pipeline owns:
 - project/import/revision persistence records
 
 The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output final toolpaths, or generate G-code.
+
+The native desktop shell is responsible for:
+
+- professional Windows workbench UX
+- command routing, recent files, local project storage, and dock orchestration
+- future Open CASCADE viewport hosting and selection behavior
+- future large-model handling, inspection ergonomics, and desktop interaction quality
+
+The current TypeScript stack remains responsible for:
+
+- deterministic planning authority
+- import normalization
+- extracted feature and operation models
+- advisory AI review payload generation
+- project/import persistence contracts
 
 ## Initial Path Planning Layer v7
 
@@ -86,6 +119,15 @@ Important boundary:
 - current geometry is either structured-source metadata or parsed planar DXF source
 - DXF support is limited to a practical 2D subset
 - STEP remains a placeholder workflow session until real parsing exists
+
+The new native workbench foundation consumes a `native-workbench-v1` bridge snapshot from `@cam/model` / `apps/api` so that the desktop shell can reuse stable ids for:
+
+- imported source records
+- model entities
+- extracted manufacturing features
+- generated operations
+- operation previews
+- selection synchronization between tree/feature/operation/tool/viewport surfaces
 
 ## Import workflow
 
@@ -215,11 +257,20 @@ Initial Path Planning Layer v7 generated subset:
 This repository does not yet implement:
 
 - real STEP parsing
+- Open CASCADE XDE document loading
+- persistent face/edge/solid selection ids from STEP topology
 - a geometry kernel or B-Rep modeler
 - machine simulation
 - collision checking
 - true cutter-engagement-aware toolpath planning
 - postprocessors or G-code output
 - production-grade tool assemblies and cutting data
+
+Native desktop honesty boundary:
+
+- `apps/desktop-native` is a real Qt Widgets shell foundation
+- the viewport is currently a viewer integration boundary, not a finished OCCT scene
+- STEP import in the TypeScript importers remains metadata-only placeholder behavior
+- the native shell does not claim Mastercam parity, finished STEP machining, or production NC output
 
 Those gaps remain explicit so the repository stays honest, auditable, and manufacturing-oriented.
