@@ -208,6 +208,7 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
   };
 }
 
+// Only start the HTTP listener when this module is executed directly.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { server, port } = createCamApiServer();
   server.listen(port, () => {

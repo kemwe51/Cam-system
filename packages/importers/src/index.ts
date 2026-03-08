@@ -22,8 +22,12 @@ export interface PartImporter {
   importPart(source: ImportedPartSource): Promise<ImportResult>;
 }
 
+function formatLabel(format: ImportFormat): string {
+  return format === 'step' ? 'STEP' : format === 'dxf' ? 'DXF' : 'JSON';
+}
+
 function sourceMismatchMessage(expected: ImportFormat, received: ImportFormat): string {
-  return `Expected ${expected.toUpperCase()} source, received ${received.toUpperCase()}.`;
+  return `Expected ${formatLabel(expected)} source, received ${formatLabel(received)}.`;
 }
 
 export class JsonPartImporter implements PartImporter {

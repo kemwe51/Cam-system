@@ -3,7 +3,7 @@ import { z } from 'zod';
 const positiveNumber = z.number().positive();
 const nonNegativeNumber = z.number().nonnegative();
 const optionalId = z.string().min(1).optional();
-const isoDateTime = z.string().datetime();
+const isoDateTimeSchema = z.string().datetime();
 
 const featureNameSchema = z.string().min(1);
 
@@ -198,7 +198,7 @@ export const approvalStateSchema = z.object({
   state: approvalStateValueSchema,
   requiresHumanApproval: z.boolean(),
   approvedBy: z.string().min(1).optional(),
-  approvedAt: isoDateTime.optional(),
+  approvedAt: isoDateTimeSchema.optional(),
   notes: z.array(z.string()).default([]),
 });
 
@@ -253,7 +253,7 @@ export const projectMetadataSchema = z.object({
   partId: z.string().min(1),
   partName: z.string().min(1),
   revision: z.string().min(1),
-  updatedAt: isoDateTime,
+  updatedAt: isoDateTimeSchema,
   approvalState: approvalStateValueSchema,
   dirty: z.boolean().default(false),
 });
@@ -266,7 +266,7 @@ export const projectDraftSchema = z.object({
   plan: draftCamPlanSchema,
   review: camReviewSchema.optional(),
   selectedEntity: selectedEntitySchema.optional(),
-  savedAt: isoDateTime.optional(),
+  savedAt: isoDateTimeSchema.optional(),
 });
 
 export const approvalRequestSchema = z.object({

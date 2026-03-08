@@ -158,7 +158,9 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
     });
   });
 
-  return features.sort((left, right) => featureKindOrder.indexOf(left.kind) - featureKindOrder.indexOf(right.kind));
+  return features.sort(
+    (left, right) => featureKindOrder.indexOf(left.kind) - featureKindOrder.indexOf(right.kind),
+  );
 }
 
 function requireTool(toolId: string): Tool {
@@ -432,7 +434,9 @@ export function planPart(input: PartInput): DraftCamPlan {
     });
   }
 
-  const estimatedCycleTimeMinutes = Number(operations.reduce((sum, operation) => sum + operation.estimatedMinutes, 0).toFixed(1));
+  const estimatedCycleTimeMinutes = Number(
+    operations.reduce((sum, operation) => sum + operation.estimatedMinutes, 0).toFixed(1),
+  );
   const tools = defaultToolLibrary.tools.filter((tool) => toolIds.has(tool.id));
 
   return draftCamPlanSchema.parse({

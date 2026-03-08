@@ -32,6 +32,16 @@ function projectPath(directory: string, projectId: string): string {
   return join(directory, `${normalizedProjectId}.json`);
 }
 
+function shouldLogProjectErrors(): boolean {
+  return process.env.NODE_ENV !== 'test' || process.env.CAM_LOG_TEST_PROJECT_ERRORS === 'true';
+}
+
+function logUnreadableProjectFile(file: string, error: unknown): void {
+  if (shouldLogProjectErrors()) {
+    console.warn(`Ignoring unreadable project file ${file}:`, error);
+  }
+}
+
 function enrichDraft(projectId: string, draft: ProjectDraft, updatedAt = draft.savedAt ?? new Date().toISOString()): ProjectDraft {
   const metadata = draft.metadata ?? buildProjectMetadata(projectId, draft.plan, updatedAt, false);
   return projectDraftSchema.parse({
@@ -60,8 +70,8 @@ export function createFileProjectRepository(
           const payload = await readFile(join(directory, file), 'utf8');
           const draft = enrichDraft(file.replace(/\.json$/, ''), projectDraftSchema.parse(JSON.parse(payload)));
           projects.push(projectSummarySchema.parse(draft.metadata));
-        } catch {
-          // Ignore malformed files so one bad draft does not block the repository.
+        } catch (error) {
+          logUnreadableProjectFile(file, error);
         }
       }
 

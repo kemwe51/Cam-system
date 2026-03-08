@@ -46,6 +46,9 @@ export type ScenePipeline = {
   disclaimer: string;
 };
 
+export const derivedViewportDisclaimer =
+  'Derived viewport only: stock, features, and operation overlays are arranged from structured JSON and draft state. This is not a CAD kernel, STEP/DXF machining pipeline, or verified toolpath preview.';
+
 const featureColors: Record<NormalizedFeature['kind'], string> = {
   top_surface: '#38bdf8',
   contour: '#22c55e',
@@ -142,6 +145,18 @@ function layoutFeatureBodies(part: PartInput, features: NormalizedFeature[]): De
   });
 }
 
+function getOperationOverlayColor(operation: Operation, selectedOperationId: string | null): string {
+  if (selectedOperationId === operation.id) {
+    return '#f8fafc';
+  }
+
+  if (!operation.enabled) {
+    return '#ef4444';
+  }
+
+  return operation.origin === 'manual' ? '#f59e0b' : '#38bdf8';
+}
+
 function buildOperationOverlays(
   featureBodies: DerivedBody[],
   operations: DraftCamPlan['operations'],
@@ -160,13 +175,7 @@ function buildOperationOverlays(
       label: operation.name,
       position: [position[0], position[1], position[2] + lift],
       size: [Math.max(size[0] * 0.88, 4), Math.max(size[1] * 0.88, 4), 0.6],
-      color: selectedOperationId === operation.id
-        ? '#f8fafc'
-        : !operation.enabled
-          ? '#ef4444'
-          : operation.origin === 'manual'
-            ? '#f59e0b'
-            : '#38bdf8',
+      color: getOperationOverlayColor(operation, selectedOperationId),
       enabled: operation.enabled,
       origin: operation.origin,
     };
@@ -201,7 +210,6 @@ export function buildScenePipeline(
       clippingPlanes: [],
       readyForSectionPlanes: true,
     },
-    disclaimer:
-      'Derived viewport only: stock, features, and operation overlays are arranged from structured JSON and draft state. This is not a CAD kernel, STEP/DXF machining pipeline, or verified toolpath preview.',
+    disclaimer: derivedViewportDisclaimer,
   };
 }

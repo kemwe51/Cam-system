@@ -147,8 +147,19 @@ function defaultOperationKind(feature: NormalizedFeature): Operation['kind'] {
   }
 }
 
+let fallbackIdCounter = 0;
+
+function createUuid(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  fallbackIdCounter += 1;
+  return `${Date.now()}-${fallbackIdCounter}-${Math.random().toString(16).slice(2)}`;
+}
+
 function operationId(prefix: string, featureId: string): string {
-  return `${prefix}-${featureId}-${crypto.randomUUID()}`;
+  return `${prefix}-${featureId}-${createUuid()}`;
 }
 
 function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperation?: Operation): Operation {

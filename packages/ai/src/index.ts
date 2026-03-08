@@ -70,7 +70,7 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
   }
 
   if (plan.features.some((feature) => feature.kind === 'pocket' && feature.depthMm >= 12)) {
-    suggestedEdits.push('Review pocket step-down, holder clearance, and rest machining for the deep pocket before release.');
+    suggestedEdits.push('Review pocket step-down, holder clearance, and remaining machining for the deep pocket before release.');
   }
 
   if (plan.features.every((feature) => feature.kind !== 'top_surface')) {
