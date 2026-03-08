@@ -13,12 +13,13 @@
   "dependencies": {
     "@cam/ai": "file:../../packages/ai",
     "@cam/engine": "file:../../packages/engine",
-    "@cam/geometry2d": "file:../../packages/geometry2d",
     "@cam/importers": "file:../../packages/importers",
     "@cam/model": "file:../../packages/model",
-    "@cam/shared": "file:../../packages/shared"
+    "@cam/shared": "file:../../packages/shared",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "^4.0.18"
   }
 }

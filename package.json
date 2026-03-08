@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.9.0",
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -10,6 +15,7 @@
   "scripts": {
     "build:packages": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai",
     "build": "npm run build:packages && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
+    "verify": "npm run build && npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
     "test": "npm run build:packages && npm run test:workspaces",
     "test:all": "npm run test:workspaces",

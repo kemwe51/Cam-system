@@ -21,6 +21,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@cam/engine": "file:../engine"
+    "@cam/engine": "file:../engine",
+    "vitest": "^4.0.18"
   }
 }

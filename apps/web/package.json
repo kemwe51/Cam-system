@@ -10,7 +10,6 @@
     "test": "vitest run src/workbenchReducer.test.ts src/viewportScene.test.ts"
   },
   "dependencies": {
-    "@cam/geometry2d": "file:../../packages/geometry2d",
     "@cam/model": "file:../../packages/model",
     "@cam/shared": "file:../../packages/shared",
     "@react-three/drei": "^10.7.7",
@@ -24,7 +23,9 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "three-stdlib": "^2.36.1",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
   }
 }
