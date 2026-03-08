@@ -79,6 +79,14 @@ type ToolSelection = {
   reason: ToolSelectionReason;
 };
 
+type FeatureDepthSignals = {
+  assumptions: DepthAssumption[];
+  warnings: DepthWarning[];
+  depthStatus: 'known' | 'assumed' | 'unknown';
+  unknownDepthReason?: 'dxf_2d_only' | 'manual_review_required' | 'hole_callout_missing';
+  bottomBehavior: 'floor' | 'through' | 'blind' | 'unknown';
+};
+
 type RegenerationOptions = {
   selectedFeatureIds?: string[];
   preserveFrozenEdited?: boolean;
@@ -235,13 +243,7 @@ const defaultSetupReference = {
   },
 };
 
-function buildFeatureDepthSignals(feature: Pick<NormalizedFeature, 'id' | 'name' | 'kind' | 'origin' | 'depthMm' | 'warnings'>): {
-  assumptions: DepthAssumption[];
-  warnings: DepthWarning[];
-  depthStatus: 'known' | 'assumed' | 'unknown';
-  unknownDepthReason?: 'dxf_2d_only' | 'manual_review_required' | 'hole_callout_missing';
-  bottomBehavior: 'floor' | 'through' | 'blind' | 'unknown';
-} {
+function buildFeatureDepthSignals(feature: Pick<NormalizedFeature, 'id' | 'name' | 'kind' | 'origin' | 'depthMm' | 'warnings'>): FeatureDepthSignals {
   if (feature.depthMm <= 0) {
     return {
       assumptions: [],
@@ -401,7 +403,12 @@ function buildFeatureDepthModel(
   });
 }
 
-function buildPassDepthPlan(feature: NormalizedFeature, tool: Tool, operationKind: OperationKind, operationName: string) {
+function buildPassDepthPlan(
+  feature: NormalizedFeature,
+  tool: Tool,
+  operationKind: OperationKind,
+  operationName: string,
+): OperationDepthProfile['passDepthPlan'] {
   if (feature.depthMm <= 0) {
     return undefined;
   }

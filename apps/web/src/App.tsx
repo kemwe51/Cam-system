@@ -265,6 +265,10 @@ function App() {
   ) {
     const operation = orderedOperations.find((item) => item.id === operationId);
     if (!operation?.depthProfile) {
+      dispatch({
+        type: 'log',
+        message: `Skipped depth edit for ${operation?.name ?? operationId} because no editable depth profile is available.`,
+      });
       return;
     }
 
@@ -903,6 +907,7 @@ function App() {
                     }
                     updateOperationDepthProfile(selectedOperation.id, (profile) => {
                       const topZMm = profile.topReference?.reference.zMm ?? profile.stockTop?.zMm ?? 0;
+                      const floorZMm = Number((topZMm - nextDepth).toFixed(2));
                       return {
                         ...profile,
                         targetDepthMm: nextDepth,
@@ -911,13 +916,13 @@ function App() {
                             id: profile.floorLevel?.reference.id ?? `${selectedOperation.id}-manual-floor`,
                             kind: 'feature_floor',
                             label: profile.floorLevel?.reference.label ?? `${selectedOperation.name} floor`,
-                            zMm: Number((topZMm - nextDepth).toFixed(2)),
+                            zMm: floorZMm,
                           },
-                          zMm: Number((topZMm - nextDepth).toFixed(2)),
+                          zMm: floorZMm,
                         },
                         depthRange: {
                           topZMm,
-                          bottomZMm: Number((topZMm - nextDepth).toFixed(2)),
+                          bottomZMm: floorZMm,
                         },
                         fieldSources: {
                           ...profile.fieldSources,
