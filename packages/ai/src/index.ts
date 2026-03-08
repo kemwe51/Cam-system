@@ -64,8 +64,22 @@ type ReviewContext = {
     notes: string;
     estimatedMinutes: number;
     toolName: string;
+    toolClass?: Operation['toolClass'];
+    toolSelectionReason?: string;
     isDirty: boolean;
+    depthStatus?: NonNullable<Operation['depthProfile']>['depthStatus'];
+    targetDepthMm?: number;
+    overridePreserved?: boolean;
+    depthWarnings: string[];
+    manualDepthFields: string[];
   }>;
+  depthContext: {
+    assumedFeatureCount: number;
+    unknownDepthFeatureCount: number;
+    assumedOperationCount: number;
+    unknownDepthOperationCount: number;
+    preservedOverrideCount: number;
+  };
 };
 
 function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = {}): ReviewContext {
@@ -83,6 +97,15 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
       estimatedMinutes: operation.estimatedMinutes,
       toolName: operation.toolName,
       isDirty: operation.isDirty,
+      depthWarnings: operation.depthProfile?.warnings.map((warning) => warning.message) ?? [],
+      manualDepthFields: Object.entries(operation.depthProfile?.fieldSources ?? {})
+        .filter((entry) => entry[1] === 'manual_override')
+        .map(([field]) => field),
+      ...(operation.toolClass ? { toolClass: operation.toolClass } : {}),
+      ...(operation.toolSelectionReason?.reason ? { toolSelectionReason: operation.toolSelectionReason.reason } : {}),
+      ...(operation.depthProfile?.depthStatus ? { depthStatus: operation.depthProfile.depthStatus } : {}),
+      ...(operation.depthProfile?.targetDepthMm !== undefined ? { targetDepthMm: operation.depthProfile.targetDepthMm } : {}),
+      ...(operation.depthProfile?.overridePreserved ? { overridePreserved: operation.depthProfile.overridePreserved } : {}),
     }));
 
   return {
@@ -139,6 +162,13 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
       manualOverrideNotes: manualOverrides.flatMap((operation) => [operation.notes, operation.strategy].filter(Boolean)),
     },
     manualOverrides,
+    depthContext: {
+      assumedFeatureCount: plan.features.filter((feature) => feature.depthModel?.depthStatus === 'assumed').length,
+      unknownDepthFeatureCount: plan.features.filter((feature) => feature.depthModel?.depthStatus === 'unknown').length,
+      assumedOperationCount: plan.operations.filter((operation) => operation.depthProfile?.depthStatus === 'assumed').length,
+      unknownDepthOperationCount: plan.operations.filter((operation) => operation.depthProfile?.depthStatus === 'unknown').length,
+      preservedOverrideCount: plan.operations.filter((operation) => operation.depthProfile?.overridePreserved).length,
+    },
   };
 }
 
@@ -150,6 +180,14 @@ function heuristicReview(plan: DraftCamPlan, context: ReviewSupplementalContext 
 
   if (plan.features.some((feature) => feature.kind === 'hole_group')) {
     suggestedEdits.push('Confirm whether holes need chamfer, countersink, thread, or ream follow-up operations.');
+  }
+
+  if (reviewData.depthContext.assumedOperationCount > 0 || reviewData.depthContext.unknownDepthOperationCount > 0) {
+    riskFlags.push(`Depth review required for ${reviewData.depthContext.assumedOperationCount + reviewData.depthContext.unknownDepthOperationCount} operation(s) with assumed or unknown depth semantics.`);
+  }
+
+  if (plan.operations.some((operation) => operation.toolSelectionReason?.weakMatch)) {
+    suggestedEdits.push('At least one tool class was selected by a weak deterministic rule. Confirm diameter, reach, and holder margin before approval.');
   }
 
   if (plan.features.some((feature) => feature.kind === 'pocket' && feature.depthMm >= 12)) {
@@ -170,6 +208,10 @@ function heuristicReview(plan: DraftCamPlan, context: ReviewSupplementalContext 
 
   if (plan.operations.some((operation) => operation.isDirty)) {
     suggestedEdits.push('Modified operations are unsaved draft overrides and should be re-reviewed before approval.');
+  }
+
+  if (plan.operations.some((operation) => operation.depthProfile?.overridePreserved)) {
+    suggestedEdits.push('Regeneration preserved manual depth overrides. Confirm those overrides still match the updated deterministic feature interpretation.');
   }
 
   if (context.model?.status === 'placeholder') {

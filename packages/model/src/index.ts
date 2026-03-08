@@ -808,6 +808,7 @@ function buildPreviewPaths(
         points: fragment.points,
         closed: fragment.closed,
         ...(fragment.label ? { label: fragment.label } : {}),
+        ...(operation.depthProfile?.targetDepthMm !== undefined ? { depthAnnotation: `Z ${operation.depthProfile.targetDepthMm.toFixed(1)} mm` } : {}),
       }]
     : [{
         id: `${previewId}-segment-1`,
@@ -821,6 +822,7 @@ function buildPreviewPaths(
                 : 'line',
         points: previewOutline(position, size),
         closed: operation.kind !== 'drill',
+        ...(operation.depthProfile?.targetDepthMm !== undefined ? { depthAnnotation: `Z ${operation.depthProfile.targetDepthMm.toFixed(1)} mm` } : {}),
       }];
 
   return [
@@ -874,8 +876,17 @@ export function deriveOperationPreviews(model: ImportedModel, operations: DraftC
       ...(operation.depthProfile?.targetDepthMm !== undefined
         ? [`Target depth ${operation.depthProfile.targetDepthMm.toFixed(1)} mm below stock top.`]
         : []),
+      ...(operation.depthProfile?.bottomReference
+        ? [`Bottom behavior ${operation.depthProfile.bottomReference.behavior.replaceAll('_', ' ')}.`]
+        : []),
       ...(operation.depthProfile?.floorLevel
         ? [`Floor level Z ${operation.depthProfile.floorLevel.zMm.toFixed(1)} mm.`]
+        : []),
+      ...(operation.depthProfile?.passDepthPlan
+        ? [`${operation.depthProfile.passDepthPlan.roughingLayerCount} planning depth layer(s), finish ${operation.depthProfile.passDepthPlan.finishPass.replaceAll('_', ' ')}.`]
+        : []),
+      ...(operation.depthProfile?.overridePreserved
+        ? ['Manual depth override preserved during regeneration.']
         : []),
       ...(operation.depthProfile?.assumptions.map((assumption) => assumption.label) ?? []),
     ];

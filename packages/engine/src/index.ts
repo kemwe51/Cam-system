@@ -79,6 +79,14 @@ type ToolSelection = {
   reason: ToolSelectionReason;
 };
 
+type FeatureDepthSignals = {
+  assumptions: DepthAssumption[];
+  warnings: DepthWarning[];
+  depthStatus: 'known' | 'assumed' | 'unknown';
+  unknownDepthReason?: 'dxf_2d_only' | 'manual_review_required' | 'hole_callout_missing';
+  bottomBehavior: 'floor' | 'through' | 'blind' | 'unknown';
+};
+
 type RegenerationOptions = {
   selectedFeatureIds?: string[];
   preserveFrozenEdited?: boolean;
@@ -226,44 +234,110 @@ const defaultSetupPlane = {
   orientation: 'top' as const,
 };
 
-function buildFeatureDepthSignals(feature: Pick<NormalizedFeature, 'id' | 'name' | 'origin' | 'depthMm' | 'warnings'>): {
-  assumptions: DepthAssumption[];
-  warnings: DepthWarning[];
-} {
-  if (feature.origin !== 'geometry_inferred' || feature.depthMm <= 0) {
+const defaultSetupReference = {
+  setupPlane: defaultSetupPlane,
+  workOffset: {
+    id: 'work-offset-g54',
+    label: 'Primary work offset',
+    code: 'G54',
+  },
+};
+
+function buildFeatureDepthSignals(feature: Pick<NormalizedFeature, 'id' | 'name' | 'kind' | 'origin' | 'depthMm' | 'warnings'>): FeatureDepthSignals {
+  if (feature.depthMm <= 0) {
     return {
       assumptions: [],
       warnings: [],
+      depthStatus: feature.kind === 'top_surface' ? 'known' : 'unknown',
+      ...(feature.kind === 'top_surface' ? {} : { unknownDepthReason: 'manual_review_required' as const }),
+      bottomBehavior: 'unknown',
     };
   }
 
+  if (feature.origin !== 'geometry_inferred') {
+    return {
+      assumptions: [],
+      warnings: [],
+      depthStatus: 'known',
+      bottomBehavior:
+        feature.kind === 'contour'
+          ? 'blind'
+          : feature.kind === 'hole_group'
+            ? 'blind'
+            : 'floor',
+    };
+  }
+
+  const assumptions: DepthAssumption[] = [
+    depthAssumptionSchema.parse({
+      id: `${feature.id}-depth-assumed`,
+      label: 'Depth assumed from 2D source',
+      description: `${feature.name} uses a provisional ${roundNumber(feature.depthMm)} mm depth because imported 2D geometry does not include verified Z extents.`,
+      source: 'import_default',
+      reviewRequired: true,
+    }),
+  ];
+  const warnings: DepthWarning[] = [
+    depthWarningSchema.parse({
+      code: 'depth_assumed_from_2d',
+      message: 'Depth is inferred from a 2D planning default and must be confirmed before release.',
+      severity: feature.warnings.length > 0 ? 'high' : 'medium',
+      reviewRequired: true,
+    }),
+  ];
+
+  let bottomBehavior: 'floor' | 'through' | 'blind' | 'unknown' = 'unknown';
+  if (feature.kind === 'contour') {
+    bottomBehavior = 'through';
+    assumptions.push(depthAssumptionSchema.parse({
+      id: `${feature.id}-through-cut-assumed`,
+      label: 'Through-cut assumed',
+      description: '2D contour geometry does not prove stock break-through, so the planner keeps this as a review-required through-cut assumption.',
+      source: 'import_default',
+      reviewRequired: true,
+    }));
+  } else if (feature.kind === 'pocket' || feature.kind === 'slot') {
+    bottomBehavior = 'floor';
+  } else if (feature.kind === 'hole_group') {
+    bottomBehavior = 'unknown';
+    warnings.push(depthWarningSchema.parse({
+      code: 'hole_depth_callout_missing',
+      message: 'Hole depth is not verified by the 2D source. Through/blind intent must be confirmed manually.',
+      severity: 'high',
+      reviewRequired: true,
+    }));
+  } else if (feature.kind === 'chamfer' || feature.kind === 'engraving') {
+    bottomBehavior = 'blind';
+  }
+
   return {
-    assumptions: [
-      depthAssumptionSchema.parse({
-        id: `${feature.id}-depth-assumed`,
-        label: 'Depth assumed from 2D source',
-        description: `${feature.name} uses a provisional ${roundNumber(feature.depthMm)} mm depth because imported 2D geometry does not include verified Z extents.`,
-        source: 'import_default',
-        reviewRequired: true,
-      }),
-    ],
-    warnings: [
-      depthWarningSchema.parse({
-        code: 'depth_assumed_from_2d',
-        message: 'Depth is inferred from a 2D planning default and must be confirmed before release.',
-        severity: feature.warnings.length > 0 ? 'high' : 'medium',
-        reviewRequired: true,
-      }),
-    ],
+    assumptions,
+    warnings,
+    depthStatus: 'assumed',
+    unknownDepthReason: feature.kind === 'hole_group' ? 'hole_callout_missing' : 'dxf_2d_only',
+    bottomBehavior,
   };
 }
 
-function buildFeatureDepthModel(feature: Pick<NormalizedFeature, 'id' | 'name' | 'depthMm' | 'origin' | 'warnings'>): FeatureDepthModel {
+function fieldSource(feature: Pick<NormalizedFeature, 'origin'>): 'generated' | 'assumed' {
+  return feature.origin === 'geometry_inferred' ? 'assumed' : 'generated';
+}
+
+function buildFeatureDepthModel(
+  feature: Pick<NormalizedFeature, 'id' | 'name' | 'kind' | 'depthMm' | 'origin' | 'warnings'>,
+  stockZMm = inferredStockZMm,
+): FeatureDepthModel {
   const stockTopReference = {
     id: `${feature.id}-stock-top`,
     kind: 'stock_top' as const,
     label: 'Stock top',
     zMm: 0,
+  };
+  const stockBottomReference = {
+    id: `${feature.id}-stock-bottom`,
+    kind: 'unknown' as const,
+    label: 'Stock bottom',
+    zMm: -stockZMm,
   };
   const floorReference = {
     id: `${feature.id}-feature-floor`,
@@ -291,12 +365,26 @@ function buildFeatureDepthModel(feature: Pick<NormalizedFeature, 'id' | 'name' |
 
   return featureDepthModelSchema.parse({
     setupPlane: defaultSetupPlane,
+    setupReference: defaultSetupReference,
     stockTop: {
       reference: stockTopReference,
       zMm: stockTopReference.zMm,
     },
+    stockBottom: {
+      reference: stockBottomReference,
+      zMm: stockBottomReference.zMm,
+    },
+    topReference: {
+      reference: stockTopReference,
+      source: signals.depthStatus === 'known' ? 'known' : signals.depthStatus,
+    },
     ...(feature.depthMm > 0
       ? {
+          bottomReference: {
+            reference: floorReference,
+            source: signals.depthStatus === 'known' ? 'known' : signals.depthStatus,
+            behavior: signals.bottomBehavior,
+          },
           floorLevel: {
             reference: floorReference,
             zMm: floorReference.zMm,
@@ -307,17 +395,61 @@ function buildFeatureDepthModel(feature: Pick<NormalizedFeature, 'id' | 'name' |
           },
         }
       : {}),
+    depthStatus: signals.depthStatus,
+    ...(signals.unknownDepthReason ? { unknownDepthReason: signals.unknownDepthReason } : {}),
     machiningLevels,
     assumptions: signals.assumptions,
     warnings: signals.warnings,
   });
 }
 
-function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): OperationDepthProfile {
+function buildPassDepthPlan(
+  feature: NormalizedFeature,
+  tool: Tool,
+  operationKind: OperationKind,
+  operationName: string,
+): OperationDepthProfile['passDepthPlan'] {
+  if (feature.depthMm <= 0) {
+    return undefined;
+  }
+
+  const conservativeStepDownMm = operationKind === 'drill'
+    ? roundNumber(Math.min(feature.depthMm, Math.max(Math.min(tool.maxDepthMm / 2, tool.diameterMm * 2.5), 0.5)))
+    : roundNumber(Math.min(feature.depthMm, Math.max(Math.min(tool.diameterMm * 0.75, tool.maxDepthMm / 3), 0.25)));
+  const roughingLayerCount = Math.max(1, Math.ceil(feature.depthMm / conservativeStepDownMm));
+  const finishPass = operationKind === 'pocket'
+    ? operationName.toLowerCase().includes('finish')
+      ? 'wall_and_floor'
+      : 'none'
+    : operationKind === 'profile'
+      ? operationName.toLowerCase().includes('finish')
+        ? 'profile_cleanup'
+        : 'none'
+      : operationKind === 'chamfer'
+        ? 'wall'
+        : operationKind === 'engrave'
+          ? 'floor'
+          : 'none';
+
+  return {
+    roughingLayerCount,
+    maxStepDownMm: conservativeStepDownMm,
+    finishPass,
+    retractTo: roughingLayerCount > 1 ? 'retract_plane' : 'safe_clearance',
+    note:
+      roughingLayerCount > 1
+        ? `${roughingLayerCount} planning layers derived from conservative step-down assumptions. This is not a final NC pass calculation.`
+        : 'Single planning depth layer only. This remains a depth-aware machining preview hint, not a final NC pass list.',
+  } as const;
+}
+
+function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool, candidate: OperationCandidate): OperationDepthProfile {
   const depthModel = feature.depthModel ?? buildFeatureDepthModel(feature);
+  const autoFieldSource = fieldSource(feature);
   const passDepthHintMm = feature.depthMm > 0
     ? roundNumber(Math.min(feature.depthMm, Math.max(Math.min(tool.maxDepthMm / 2, tool.maxDepthMm), 0.25)))
     : undefined;
+  const passDepthPlan = buildPassDepthPlan(feature, tool, candidate.kind, candidate.name);
   const warnings = [...depthModel.warnings];
 
   if (feature.depthMm > tool.maxDepthMm) {
@@ -331,10 +463,16 @@ function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): Ope
 
   return operationDepthProfileSchema.parse({
     setupPlane: depthModel.setupPlane,
+    setupReference: depthModel.setupReference,
     stockTop: depthModel.stockTop,
+    stockBottom: depthModel.stockBottom,
+    topReference: depthModel.topReference,
+    bottomReference: depthModel.bottomReference,
     floorLevel: depthModel.floorLevel,
     depthRange: depthModel.depthRange,
     ...(feature.depthMm > 0 ? { targetDepthMm: feature.depthMm } : {}),
+    depthStatus: depthModel.depthStatus,
+    ...(depthModel.unknownDepthReason ? { unknownDepthReason: depthModel.unknownDepthReason } : {}),
     ...(passDepthHintMm
       ? {
           passDepthHint: {
@@ -343,6 +481,7 @@ function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): Ope
           },
         }
       : {}),
+    ...(passDepthPlan ? { passDepthPlan } : {}),
     safeClearance: {
       reference: {
         id: `${feature.id}-safe-clearance`,
@@ -352,6 +491,22 @@ function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): Ope
       },
       zMm: 5,
     },
+    retractPlane: {
+      reference: {
+        id: `${feature.id}-retract-plane`,
+        kind: 'safe_clearance',
+        label: 'Retract plane',
+        zMm: 8,
+      },
+      zMm: 8,
+    },
+    fieldSources: {
+      ...(feature.depthMm > 0 ? { targetDepth: autoFieldSource, floorLevel: autoFieldSource, bottomBehavior: autoFieldSource } : {}),
+      topReference: 'generated',
+      safeClearance: 'generated',
+      retractPlane: 'generated',
+      ...(passDepthPlan ? { passDepthPlan: autoFieldSource } : {}),
+    },
     assumptions: depthModel.assumptions,
     warnings,
   });
@@ -359,6 +514,7 @@ function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): Ope
 
 function normalizePart(part: PartInput): NormalizedFeature[] {
   const features: NormalizedFeature[] = [];
+  const stockZMm = part.stock.zMm;
 
   part.topSurfaces.forEach((surface, index) => {
     features.push({
@@ -376,10 +532,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('top-surface', index, surface.id),
         name: surface.name,
+        kind: 'top_surface',
         depthMm: 0,
         origin: surface.origin,
         warnings: surface.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -399,10 +556,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('contour', index, contour.id),
         name: contour.name,
+        kind: 'contour',
         depthMm: contour.depthMm,
         origin: contour.origin,
         warnings: contour.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -422,10 +580,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('pocket', index, pocket.id),
         name: pocket.name,
+        kind: 'pocket',
         depthMm: pocket.depthMm,
         origin: pocket.origin,
         warnings: pocket.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -445,10 +604,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('slot', index, slot.id),
         name: slot.name,
+        kind: 'slot',
         depthMm: slot.depthMm,
         origin: slot.origin,
         warnings: slot.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -468,10 +628,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('hole-group', index, holeGroup.id),
         name: holeGroup.name,
+        kind: 'hole_group',
         depthMm: holeGroup.depthMm,
         origin: holeGroup.origin,
         warnings: holeGroup.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -491,10 +652,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('chamfer', index, chamfer.id),
         name: chamfer.name,
+        kind: 'chamfer',
         depthMm: chamfer.sizeMm,
         origin: chamfer.origin,
         warnings: chamfer.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -514,10 +676,11 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       depthModel: buildFeatureDepthModel({
         id: createFeatureId('engraving', index, engraving.id),
         name: engraving.name,
+        kind: 'engraving',
         depthMm: engraving.depthMm,
         origin: engraving.origin,
         warnings: engraving.warnings,
-      }),
+      }, stockZMm),
     });
   });
 
@@ -538,6 +701,26 @@ function requireTool(toolId: string): Tool {
   return tool;
 }
 
+function selectionReason(
+  toolClass: ToolClass,
+  reason: string,
+  ruleId: string,
+  diameterBasisMm?: number,
+  depthBasisMm?: number,
+  warnings: string[] = [],
+  weakMatch = false,
+) {
+  return {
+    toolClass,
+    reason,
+    ruleId,
+    ...(typeof diameterBasisMm === 'number' ? { diameterBasisMm } : {}),
+    ...(typeof depthBasisMm === 'number' ? { depthBasisMm } : {}),
+    warnings,
+    weakMatch,
+  };
+}
+
 function selectTool(feature: NormalizedFeature): ToolSelection {
   const classification = feature.machiningIntent?.classification ?? inferFeatureClassification(feature);
   switch (feature.kind) {
@@ -545,54 +728,73 @@ function selectTool(feature: NormalizedFeature): ToolSelection {
       return {
         tool: requireTool('tool-face-16'),
         toolClass: 'face_mill',
-        reason: {
-          toolClass: 'face_mill',
-          reason: 'Top surface facing uses the face mill to establish a simple datum surface.',
-          diameterBasisMm: 16,
-        },
+        reason: selectionReason('face_mill', 'Top surface facing uses the face mill to establish a simple datum surface.', 'tool-rule-face-surface', 16),
       };
     case 'contour': {
       const tool = feature.depthMm > deepContourThresholdMm || classification === 'inside_contour' ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
+      const warnings = feature.origin === 'geometry_inferred'
+        ? ['Contour depth and break-through intent are still assumptions from 2D source geometry.']
+        : [];
       return {
         tool,
         toolClass: 'contour_end_mill',
-        reason: {
-          toolClass: 'contour_end_mill',
-          reason:
-            classification === 'inside_contour'
-              ? 'Inside contour intent prefers the smaller contour tool for tighter internal wall access.'
-              : 'Outside contour intent prefers the larger contour tool for stable wall cleanup and better reach margin.',
-          diameterBasisMm: tool.diameterMm,
-          depthBasisMm: feature.depthMm,
-        },
+        reason: selectionReason(
+          'contour_end_mill',
+          classification === 'inside_contour'
+            ? 'Inside contour intent prefers the smaller contour tool for tighter internal wall access.'
+            : 'Outside contour intent prefers the larger contour tool for stable wall cleanup and better reach margin.',
+          classification === 'inside_contour' ? 'tool-rule-inside-contour' : 'tool-rule-outside-contour',
+          tool.diameterMm,
+          feature.depthMm,
+          warnings,
+          warnings.length > 0,
+        ),
       };
     }
     case 'pocket': {
       const tool = feature.widthMm > 0 && feature.widthMm <= narrowMillingWidthThresholdMm
         ? requireTool('tool-flat-6')
         : requireTool('tool-flat-10');
+      const warnings = feature.widthMm <= tool.diameterMm
+        ? ['Pocket width is close to the selected tool diameter. Confirm radial engagement and cleanup reach.']
+        : [];
       return {
         tool,
         toolClass: 'pocket_end_mill',
-        reason: {
-          toolClass: 'pocket_end_mill',
-          reason: 'Pocket width drives the first-pass end mill choice for conservative roughing and cleanup.',
-          diameterBasisMm: tool.diameterMm,
-          depthBasisMm: feature.depthMm,
-        },
+        reason: selectionReason(
+          'pocket_end_mill',
+          'Pocket width drives the first-pass end mill choice for conservative roughing and cleanup.',
+          feature.widthMm <= narrowMillingWidthThresholdMm ? 'tool-rule-pocket-narrow' : 'tool-rule-pocket-standard',
+          tool.diameterMm,
+          feature.depthMm,
+          warnings,
+          warnings.length > 0,
+        ),
       };
     }
     case 'slot': {
-      const tool = feature.widthMm <= narrowSlotWidthThresholdMm ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
+      const narrowSlot = feature.widthMm <= 4;
+      const tool = narrowSlot ? requireTool('tool-slot-3') : feature.widthMm <= narrowSlotWidthThresholdMm ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
+      const toolClass = narrowSlot ? 'small_slot_end_mill' : 'pocket_end_mill';
+      const warnings = feature.depthMm > tool.maxDepthMm
+        ? ['Selected slot tool does not fully cover the requested slot depth and needs programmer review.']
+        : feature.widthMm <= tool.diameterMm
+          ? ['Slot width matches the selected tool diameter closely, so the rule is conservative and may need override.']
+          : [];
       return {
         tool,
-        toolClass: 'pocket_end_mill',
-        reason: {
-          toolClass: 'pocket_end_mill',
-          reason: 'Slot width drives centerline slotting tool class selection.',
-          diameterBasisMm: tool.diameterMm,
-          depthBasisMm: feature.depthMm,
-        },
+        toolClass,
+        reason: selectionReason(
+          toolClass,
+          narrowSlot
+            ? 'Very narrow slot candidates prefer the small slot end mill class before wider general-purpose end mills.'
+            : 'Slot width drives centerline slotting tool class selection.',
+          narrowSlot ? 'tool-rule-slot-narrow' : 'tool-rule-slot-standard',
+          tool.diameterMm,
+          feature.depthMm,
+          warnings,
+          warnings.length > 0,
+        ),
       };
     }
     case 'hole_group': {
@@ -600,34 +802,28 @@ function selectTool(feature: NormalizedFeature): ToolSelection {
       return {
         tool,
         toolClass: 'drill',
-        reason: {
-          toolClass: 'drill',
-          reason: 'Hole group diameter selects the first conservative drill size bucket.',
-          diameterBasisMm: feature.lengthMm,
-          depthBasisMm: feature.depthMm,
-        },
+        reason: selectionReason(
+          'drill',
+          'Hole group diameter selects the first conservative drill size bucket.',
+          'tool-rule-hole-diameter',
+          feature.lengthMm,
+          feature.depthMm,
+          feature.origin === 'geometry_inferred' ? ['Hole through/blind intent remains unverified from the 2D source.'] : [],
+          feature.origin === 'geometry_inferred',
+        ),
       };
     }
     case 'chamfer':
       return {
         tool: requireTool('tool-chamfer-12'),
         toolClass: 'chamfer_tool',
-        reason: {
-          toolClass: 'chamfer_tool',
-          reason: 'Chamfer requests map to the default chamfer tool class.',
-          diameterBasisMm: 12,
-        },
+        reason: selectionReason('chamfer_tool', 'Chamfer requests map to the default chamfer tool class.', 'tool-rule-chamfer', 12),
       };
     case 'engraving':
       return {
         tool: requireTool('tool-engrave-02'),
         toolClass: 'engraving_tool',
-        reason: {
-          toolClass: 'engraving_tool',
-          reason: 'Marking-only engraving remains on the dedicated engraving tool class.',
-          diameterBasisMm: 0.2,
-          depthBasisMm: feature.depthMm,
-        },
+        reason: selectionReason('engraving_tool', 'Marking-only engraving remains on the dedicated engraving tool class.', 'tool-rule-engraving', 0.2, feature.depthMm),
       };
   }
 }
@@ -825,6 +1021,154 @@ function determinePreservedOperationSource(operation: Operation): Operation['sou
     return 'edited';
   }
   return operation.source;
+}
+
+function depthTopZMm(profile: OperationDepthProfile | undefined): number {
+  return profile?.topReference?.reference.zMm
+    ?? profile?.stockTop?.zMm
+    ?? profile?.depthRange?.topZMm
+    ?? 0;
+}
+
+function withManualDepthOverride(
+  existingOperation: Operation | undefined,
+  regeneratedOperation: Operation,
+): Operation {
+  if (!existingOperation?.depthProfile || !regeneratedOperation.depthProfile) {
+    return regeneratedOperation;
+  }
+
+  const fieldSources = existingOperation.depthProfile.fieldSources ?? {};
+  const manualFields = Object.entries(fieldSources)
+    .filter((entry): entry is [keyof typeof fieldSources, 'manual_override'] => entry[1] === 'manual_override')
+    .map(([field]) => field);
+
+  if (manualFields.length === 0) {
+    return regeneratedOperation;
+  }
+
+  const preservedProfile: OperationDepthProfile = {
+    ...regeneratedOperation.depthProfile,
+    fieldSources: {
+      ...regeneratedOperation.depthProfile.fieldSources,
+    },
+    assumptions: [...regeneratedOperation.depthProfile.assumptions],
+    warnings: [...regeneratedOperation.depthProfile.warnings],
+    overridePreserved: true,
+  };
+  const conflicts: string[] = [];
+
+  if (manualFields.includes('topReference') && existingOperation.depthProfile.topReference) {
+    preservedProfile.topReference = existingOperation.depthProfile.topReference;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      topReference: 'manual_override',
+    };
+  }
+
+  if (manualFields.includes('targetDepth') && existingOperation.depthProfile.targetDepthMm !== undefined) {
+    if (
+      regeneratedOperation.depthProfile.targetDepthMm !== undefined
+      && regeneratedOperation.depthProfile.targetDepthMm !== existingOperation.depthProfile.targetDepthMm
+    ) {
+      conflicts.push('Manual target depth override was kept during regeneration because it differs from the regenerated deterministic depth.');
+    }
+    preservedProfile.targetDepthMm = existingOperation.depthProfile.targetDepthMm;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      targetDepth: 'manual_override',
+    };
+  }
+
+  if (manualFields.includes('floorLevel') && existingOperation.depthProfile.floorLevel) {
+    preservedProfile.floorLevel = existingOperation.depthProfile.floorLevel;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      floorLevel: 'manual_override',
+    };
+  } else if (preservedProfile.targetDepthMm !== undefined) {
+    const topZMm = depthTopZMm(preservedProfile);
+    preservedProfile.floorLevel = {
+      reference: {
+        id: existingOperation.depthProfile.floorLevel?.reference.id ?? `${regeneratedOperation.featureId}-manual-floor`,
+        kind: 'feature_floor',
+        label: existingOperation.depthProfile.floorLevel?.reference.label ?? `${regeneratedOperation.name} manual floor`,
+        zMm: roundNumber(topZMm - preservedProfile.targetDepthMm),
+      },
+      zMm: roundNumber(topZMm - preservedProfile.targetDepthMm),
+    };
+  }
+
+  if (manualFields.includes('bottomBehavior') && existingOperation.depthProfile.bottomReference) {
+    preservedProfile.bottomReference = existingOperation.depthProfile.bottomReference;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      bottomBehavior: 'manual_override',
+    };
+  }
+
+  if (manualFields.includes('safeClearance') && existingOperation.depthProfile.safeClearance) {
+    preservedProfile.safeClearance = existingOperation.depthProfile.safeClearance;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      safeClearance: 'manual_override',
+    };
+  }
+
+  if (manualFields.includes('retractPlane') && existingOperation.depthProfile.retractPlane) {
+    preservedProfile.retractPlane = existingOperation.depthProfile.retractPlane;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      retractPlane: 'manual_override',
+    };
+  }
+
+  if (manualFields.includes('passDepthPlan') && existingOperation.depthProfile.passDepthPlan) {
+    preservedProfile.passDepthPlan = existingOperation.depthProfile.passDepthPlan;
+    preservedProfile.fieldSources = {
+      ...preservedProfile.fieldSources,
+      passDepthPlan: 'manual_override',
+    };
+  }
+
+  if (preservedProfile.targetDepthMm !== undefined) {
+    const topZMm = depthTopZMm(preservedProfile);
+    preservedProfile.depthRange = {
+      topZMm,
+      bottomZMm: roundNumber(topZMm - preservedProfile.targetDepthMm),
+    };
+  }
+
+  preservedProfile.assumptions = uniqueStrings([
+    ...preservedProfile.assumptions.map((assumption) => assumption.id),
+    `${regeneratedOperation.id}-preserved-manual-depth`,
+  ]).map((id) => {
+    if (id !== `${regeneratedOperation.id}-preserved-manual-depth`) {
+      return preservedProfile.assumptions.find((assumption) => assumption.id === id)!;
+    }
+    return depthAssumptionSchema.parse({
+      id,
+      label: 'Manual depth override preserved',
+      description: 'Regeneration kept the programmer-edited depth fields for this operation. Review any regenerated conflicts before approval.',
+      source: 'manual_override',
+      reviewRequired: true,
+    });
+  });
+  preservedProfile.warnings = [
+    ...preservedProfile.warnings,
+    ...conflicts.map((message, index) => depthWarningSchema.parse({
+      code: `manual_depth_override_conflict_${index + 1}`,
+      message,
+      severity: 'medium',
+      reviewRequired: true,
+    })),
+  ];
+
+  return {
+    ...regeneratedOperation,
+    source: 'edited',
+    depthProfile: operationDepthProfileSchema.parse(preservedProfile),
+  };
 }
 
 export function extractGeometryFeatures(documentInput: Geometry2DDocument, graphInput?: GeometryGraph): GeometryFeatureExtractionResult {
@@ -1199,7 +1543,7 @@ function createOperation(
     toolClass: candidate.toolClass,
     toolSelectionReason: selection.reason,
     machiningIntent: candidate.machiningIntent,
-    depthProfile: buildOperationDepthProfile(feature, selection.tool),
+    depthProfile: buildOperationDepthProfile(feature, selection.tool, candidate),
     links,
     warnings: candidate.warnings,
     assumptions: candidate.assumptions,
@@ -1212,7 +1556,15 @@ function buildOperationCandidateId(feature: NormalizedFeature, suffix: string): 
 
 function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSelection): OperationCandidate[] {
   const classification = feature.machiningIntent?.classification ?? inferFeatureClassification(feature);
-  const warnings = featurePlanningWarnings(feature);
+  const warnings = [
+    ...featurePlanningWarnings(feature),
+    ...selection.reason.warnings.map((warning, index) => planningWarningSchema.parse({
+      code: `${warningCode(selection.reason.ruleId ?? 'tool_rule')}_${index + 1}`,
+      message: warning,
+      severity: selection.reason.weakMatch ? 'medium' : 'low',
+      reviewRequired: true,
+    })),
+  ];
   const assumptions = featureAssumptions(feature);
   const machiningIntent = feature.machiningIntent ?? buildMachiningIntent(feature);
   const candidates: OperationCandidate[] = [];
@@ -1251,7 +1603,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
           `Rough outside contour ${feature.name}`,
           'profile',
           operationMinutes((feature.lengthMm * Math.max(feature.depthMm, 1)) / 170),
-          'Conservative outside contour roughing pass leaving material for a finish cleanup pass.',
+          'Conservative outside contour roughing pass leaving material for a finish cleanup pass. Depth planning stays advisory and keeps any through-cut assumptions explicit.',
         );
         pushCandidate(
           'contour-finish',
@@ -1266,7 +1618,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
           `Finish inside contour ${feature.name}`,
           'profile',
           operationMinutes(feature.lengthMm / 120),
-          'Single inside contour cleanup retained conservatively because automatic pocket promotion was not certain.',
+          'Single inside contour cleanup retained conservatively because automatic pocket promotion was not certain and depth/bottom intent may still require review.',
         );
       }
       break;
@@ -1276,7 +1628,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
         `Rough pocket ${feature.name}`,
         'pocket',
         operationMinutes((feature.areaMm2 * Math.max(feature.depthMm, 1)) / 9000),
-        'Adaptive roughing on the bounded internal region with conservative step-down assumptions.',
+        'Adaptive roughing on the bounded internal region with conservative floor-depth and step-down assumptions.',
       );
       pushCandidate(
         'pocket-finish',
@@ -1292,7 +1644,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
         `Mill slot ${feature.name}`,
         'slot',
         operationMinutes((feature.lengthMm * feature.depthMm) / 180),
-        'Centerline slotting with multiple depth passes using conservative slot-width assumptions.',
+        'Centerline slotting with multiple depth passes using conservative slot-width and floor-depth assumptions.',
       );
       break;
     case 'hole_group':
@@ -1301,7 +1653,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
         `Drill ${feature.name}`,
         'drill',
         operationMinutes((feature.quantity * feature.depthMm) / 35),
-        'Group holes by inferred diameter/pattern and drill them in a single conservative cycle. Follow-up thread, ream, or countersink intent remains manual review.',
+        'Group holes by inferred diameter/pattern and drill them in a single conservative cycle. Through/blind depth intent and any follow-up thread, ream, or countersink work remain manual review items.',
       );
       break;
     case 'chamfer':
@@ -1310,7 +1662,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
         `Chamfer ${feature.name}`,
         'chamfer',
         operationMinutes(feature.lengthMm / 240),
-        'Break exposed edges only; no implicit deburr on hidden or unclassified edges.',
+        'Break exposed edges only with a shallow depth profile; no implicit deburr on hidden or unclassified edges.',
       );
       break;
     case 'engraving':
@@ -1319,7 +1671,7 @@ function buildOperationCandidates(feature: NormalizedFeature, selection: ToolSel
         `Engrave ${feature.name}`,
         'engrave',
         operationMinutes(feature.lengthMm / 90),
-        'Single-line marking only. Text preview remains a derived overlay and not a verified font path.',
+        'Single-line marking only with a shallow depth profile. Text preview remains a derived overlay and not a verified font path.',
       );
       break;
   }
@@ -1544,6 +1896,7 @@ export function buildPartInputFromDraftPlan(planInput: DraftCamPlan): PartInput 
 export function regenerateDraftPlan(planInput: DraftCamPlan, options: RegenerationOptions = {}): DraftCamPlan {
   const plan = draftCamPlanSchema.parse(planInput);
   const basePlan = planPart(buildPartInputFromDraftPlan(plan));
+  const existingOperationsById = new Map(plan.operations.map((operation) => [operation.id, operation]));
   const selectedFeatureIds = options.selectedFeatureIds && options.selectedFeatureIds.length > 0
     ? new Set(options.selectedFeatureIds)
     : null;
@@ -1561,9 +1914,11 @@ export function regenerateDraftPlan(planInput: DraftCamPlan, options: Regenerati
     source: determinePreservedOperationSource(operation),
   }));
 
-  const regeneratedOperations = basePlan.operations.filter((operation) => (
-    !selectedFeatureIds || selectedFeatureIds.has(operation.featureId)
-  ));
+  const regeneratedOperations = basePlan.operations
+    .filter((operation) => (
+      !selectedFeatureIds || selectedFeatureIds.has(operation.featureId)
+    ))
+    .map((operation) => withManualDepthOverride(existingOperationsById.get(operation.id), operation));
 
   const mergedOperations = [...preservedExistingOperations, ...regeneratedOperations]
     .sort((left, right) => {

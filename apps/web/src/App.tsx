@@ -159,6 +159,19 @@ function hasDepthAssumption(item: { assumptions?: Array<unknown>; warnings?: Arr
   return (item?.assumptions?.length ?? 0) > 0 || (item?.warnings?.length ?? 0) > 0;
 }
 
+function depthFieldLabel(source: 'generated' | 'assumed' | 'manual_override' | undefined): string {
+  switch (source) {
+    case 'manual_override':
+      return 'manual override';
+    case 'assumed':
+      return 'assumed';
+    case 'generated':
+      return 'generated';
+    default:
+      return 'not set';
+  }
+}
+
 function App() {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const [error, setError] = useState<string | null>(null);
@@ -244,6 +257,30 @@ function App() {
     () => [...new Set([...(state.currentImportSession?.warnings ?? []), ...(state.currentProject?.warnings ?? []), ...(state.currentModel?.warnings ?? [])])],
     [state.currentImportSession?.warnings, state.currentModel?.warnings, state.currentProject?.warnings],
   );
+
+  function updateOperationDepthProfile(
+    operationId: string,
+    profileUpdater: (current: NonNullable<NonNullable<typeof selectedOperation>['depthProfile']>) => NonNullable<NonNullable<typeof selectedOperation>['depthProfile']>,
+    message: string,
+  ) {
+    const operation = orderedOperations.find((item) => item.id === operationId);
+    if (!operation?.depthProfile) {
+      dispatch({
+        type: 'log',
+        message: `Skipped depth edit for ${operation?.name ?? operationId} because no editable depth profile is available.`,
+      });
+      return;
+    }
+
+    dispatch({
+      type: 'updateOperation',
+      operationId,
+      changes: {
+        depthProfile: profileUpdater(operation.depthProfile),
+      },
+      message,
+    });
+  }
 
   async function withBusy(nextBusy: BusyState, action: () => Promise<void>): Promise<void> {
     try {
@@ -855,6 +892,185 @@ function App() {
               }}
             />
           </label>
+          {selectedOperation.depthProfile ? (
+            <>
+              <label>
+                <span>Target depth</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={selectedOperation.depthProfile.targetDepthMm ?? ''}
+                  onChange={(event) => {
+                    const nextDepth = Number(event.target.value);
+                    if (!Number.isFinite(nextDepth) || nextDepth < 0) {
+                      return;
+                    }
+                    updateOperationDepthProfile(selectedOperation.id, (profile) => {
+                      const topZMm = profile.topReference?.reference.zMm ?? profile.stockTop?.zMm ?? 0;
+                      const floorZMm = Number((topZMm - nextDepth).toFixed(2));
+                      return {
+                        ...profile,
+                        targetDepthMm: nextDepth,
+                        floorLevel: {
+                          reference: {
+                            id: profile.floorLevel?.reference.id ?? `${selectedOperation.id}-manual-floor`,
+                            kind: 'feature_floor',
+                            label: profile.floorLevel?.reference.label ?? `${selectedOperation.name} floor`,
+                            zMm: floorZMm,
+                          },
+                          zMm: floorZMm,
+                        },
+                        depthRange: {
+                          topZMm,
+                          bottomZMm: floorZMm,
+                        },
+                        fieldSources: {
+                          ...profile.fieldSources,
+                          targetDepth: 'manual_override',
+                          floorLevel: 'manual_override',
+                        },
+                      };
+                    }, `Updated target depth for ${selectedOperation.name}.`);
+                  }}
+                />
+                <small>{depthFieldLabel(selectedOperation.depthProfile.fieldSources?.targetDepth)}</small>
+              </label>
+              <label>
+                <span>Top reference</span>
+                <select
+                  value={selectedOperation.depthProfile.topReference?.reference.kind ?? 'stock_top'}
+                  onChange={(event) => {
+                    const nextKind = event.target.value as 'stock_top' | 'feature_top';
+                    updateOperationDepthProfile(selectedOperation.id, (profile) => {
+                      const topZMm = nextKind === 'feature_top' ? profile.floorLevel?.zMm ?? 0 : profile.stockTop?.zMm ?? 0;
+                      return {
+                        ...profile,
+                        topReference: {
+                          reference: {
+                            id: nextKind === 'feature_top' ? `${selectedOperation.id}-feature-top` : (profile.stockTop?.reference.id ?? `${selectedOperation.id}-stock-top`),
+                            kind: nextKind,
+                            label: nextKind === 'feature_top' ? 'Feature top' : (profile.stockTop?.reference.label ?? 'Stock top'),
+                            zMm: topZMm,
+                          },
+                          source: nextKind === 'feature_top' ? 'assumed' : 'known',
+                        },
+                        fieldSources: {
+                          ...profile.fieldSources,
+                          topReference: 'manual_override',
+                        },
+                      };
+                    }, `Updated top reference for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="stock_top">Stock top</option>
+                  <option value="feature_top">Feature top</option>
+                </select>
+                <small>{depthFieldLabel(selectedOperation.depthProfile.fieldSources?.topReference)}</small>
+              </label>
+              <label>
+                <span>Through / blind assumption</span>
+                <select
+                  value={selectedOperation.depthProfile.bottomReference?.behavior ?? 'unknown'}
+                  onChange={(event) => {
+                    const behavior = event.target.value as 'through' | 'blind' | 'floor' | 'unknown';
+                    updateOperationDepthProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      bottomReference: profile.bottomReference
+                        ? {
+                            ...profile.bottomReference,
+                            behavior,
+                            source: behavior === 'unknown' ? 'unknown' : 'assumed',
+                          }
+                        : {
+                            reference: {
+                              id: `${selectedOperation.id}-bottom-reference`,
+                              kind: 'feature_floor',
+                              label: 'Bottom reference',
+                              zMm: profile.floorLevel?.zMm ?? -(profile.targetDepthMm ?? 0),
+                            },
+                            behavior,
+                            source: behavior === 'unknown' ? 'unknown' : 'assumed',
+                          },
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        bottomBehavior: 'manual_override',
+                      },
+                    }), `Updated bottom behavior for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="unknown">Unknown</option>
+                  <option value="floor">Floor</option>
+                  <option value="blind">Blind</option>
+                  <option value="through">Through</option>
+                </select>
+                <small>{depthFieldLabel(selectedOperation.depthProfile.fieldSources?.bottomBehavior)}</small>
+              </label>
+              <label>
+                <span>Safe clearance</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={selectedOperation.depthProfile.safeClearance?.zMm ?? ''}
+                  onChange={(event) => {
+                    const nextValue = Number(event.target.value);
+                    if (!Number.isFinite(nextValue) || nextValue < 0) {
+                      return;
+                    }
+                    updateOperationDepthProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      safeClearance: {
+                        reference: profile.safeClearance?.reference ?? {
+                          id: `${selectedOperation.id}-safe-clearance`,
+                          kind: 'safe_clearance',
+                          label: 'Safe clearance',
+                          zMm: nextValue,
+                        },
+                        zMm: nextValue,
+                      },
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        safeClearance: 'manual_override',
+                      },
+                    }), `Updated safe clearance for ${selectedOperation.name}.`);
+                  }}
+                />
+                <small>{depthFieldLabel(selectedOperation.depthProfile.fieldSources?.safeClearance)}</small>
+              </label>
+              <label>
+                <span>Retract plane</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={selectedOperation.depthProfile.retractPlane?.zMm ?? ''}
+                  onChange={(event) => {
+                    const nextValue = Number(event.target.value);
+                    if (!Number.isFinite(nextValue) || nextValue < 0) {
+                      return;
+                    }
+                    updateOperationDepthProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      retractPlane: {
+                        reference: profile.retractPlane?.reference ?? {
+                          id: `${selectedOperation.id}-retract-plane`,
+                          kind: 'safe_clearance',
+                          label: 'Retract plane',
+                          zMm: nextValue,
+                        },
+                        zMm: nextValue,
+                      },
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        retractPlane: 'manual_override',
+                      },
+                    }), `Updated retract plane for ${selectedOperation.name}.`);
+                  }}
+                />
+                <small>{depthFieldLabel(selectedOperation.depthProfile.fieldSources?.retractPlane)}</small>
+              </label>
+            </>
+          ) : null}
           <label className="checkbox-row">
             <input type="checkbox" checked={selectedOperation.enabled} onChange={() => dispatch({ type: 'toggleOperation', operationId: selectedOperation.id, message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.` })} />
             <span>Enabled for the draft sequence</span>
@@ -896,12 +1112,18 @@ function App() {
             <div><dt>Tool</dt><dd>{selectedOperation.toolName}</dd></div>
             <div><dt>Status</dt><dd>{selectedOperation.enabled ? 'Enabled' : 'Disabled'}</dd></div>
             <div><dt>Tool class</dt><dd>{selectedOperation.toolClass?.replaceAll('_', ' ') ?? 'Not set'}</dd></div>
+            <div><dt>Tool rule</dt><dd>{selectedOperation.toolSelectionReason?.reason ?? 'Not set'}</dd></div>
             <div><dt>Preview summary</dt><dd>{linkedPreview ? `${linkedPreview.sourceGeometryIds.length} source refs linked` : 'Generic preview only'}</dd></div>
             <div><dt>Inference</dt><dd>{selectedOperation.machiningIntent?.rationale ?? 'Manual operation'}</dd></div>
+            {selectedOperation.depthProfile?.depthStatus ? <div><dt>Depth state</dt><dd>{selectedOperation.depthProfile.depthStatus.replace('_', ' ')}</dd></div> : null}
             {selectedOperation.depthProfile?.targetDepthMm !== undefined ? <div><dt>Target depth</dt><dd>{selectedOperation.depthProfile.targetDepthMm.toFixed(1)} mm</dd></div> : null}
             {selectedOperation.depthProfile?.floorLevel ? <div><dt>Floor level</dt><dd>{selectedOperation.depthProfile.floorLevel.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedOperation.depthProfile?.bottomReference ? <div><dt>Bottom behavior</dt><dd>{selectedOperation.depthProfile.bottomReference.behavior.replaceAll('_', ' ')}</dd></div> : null}
             {selectedOperation.depthProfile?.passDepthHint ? <div><dt>Pass depth hint</dt><dd>{selectedOperation.depthProfile.passDepthHint.axialStepDownMm.toFixed(1)} mm ({selectedOperation.depthProfile.passDepthHint.basis.replace('_', ' ')})</dd></div> : null}
+            {selectedOperation.depthProfile?.passDepthPlan ? <div><dt>Pass plan</dt><dd>{selectedOperation.depthProfile.passDepthPlan.roughingLayerCount} layer(s), finish {selectedOperation.depthProfile.passDepthPlan.finishPass.replaceAll('_', ' ')}</dd></div> : null}
             {selectedOperation.depthProfile?.safeClearance ? <div><dt>Safe clearance</dt><dd>{selectedOperation.depthProfile.safeClearance.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedOperation.depthProfile?.retractPlane ? <div><dt>Retract plane</dt><dd>{selectedOperation.depthProfile.retractPlane.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedOperation.depthProfile?.overridePreserved ? <div><dt>Regeneration</dt><dd>Manual depth override preserved</dd></div> : null}
           </dl>
         </div>
       );
@@ -925,7 +1147,9 @@ function App() {
             <div><dt>Confidence</dt><dd>{(selectedFeature.confidence * 100).toFixed(0)}%</dd></div>
             <div><dt>Inference</dt><dd>{selectedFeature.inferenceMethod ?? 'Structured input'}</dd></div>
             <div><dt>Machining intent</dt><dd>{selectedFeature.machiningIntent?.classification.replace('_', ' ') ?? 'Not classified'}</dd></div>
+            {selectedFeature.depthModel?.depthStatus ? <div><dt>Depth state</dt><dd>{selectedFeature.depthModel.depthStatus.replace('_', ' ')}</dd></div> : null}
             {selectedFeature.depthModel?.floorLevel ? <div><dt>Floor level</dt><dd>{selectedFeature.depthModel.floorLevel.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedFeature.depthModel?.bottomReference ? <div><dt>Bottom behavior</dt><dd>{selectedFeature.depthModel.bottomReference.behavior.replaceAll('_', ' ')}</dd></div> : null}
             {selectedFeature.depthModel?.stockTop ? <div><dt>Stock top</dt><dd>{selectedFeature.depthModel.stockTop.zMm.toFixed(1)} mm</dd></div> : null}
             {selectedExtractedFeature ? <div><dt>Extracted kind</dt><dd>{selectedExtractedFeature.kind.replace('_', ' ')}</dd></div> : null}
           </dl>
@@ -1008,12 +1232,14 @@ function App() {
       return (
         <div className="inspector-form">
           <span className="chip">tool</span>
-          <dl className="detail-pairs">
-            <div><dt>Name</dt><dd>{selectedTool.name}</dd></div>
-            <div><dt>Type</dt><dd>{selectedTool.type.replaceAll('_', ' ')}</dd></div>
-            <div><dt>Diameter</dt><dd>{selectedTool.diameterMm} mm</dd></div>
-            <div><dt>Max depth</dt><dd>{selectedTool.maxDepthMm} mm</dd></div>
-          </dl>
+            <dl className="detail-pairs">
+              <div><dt>Name</dt><dd>{selectedTool.name}</dd></div>
+              <div><dt>Type</dt><dd>{selectedTool.type.replaceAll('_', ' ')}</dd></div>
+              <div><dt>Diameter</dt><dd>{selectedTool.diameterMm} mm</dd></div>
+              <div><dt>Max depth</dt><dd>{selectedTool.maxDepthMm} mm</dd></div>
+              <div><dt>Tool classes</dt><dd>{selectedTool.supportedToolClasses.map((toolClass) => toolClass.replaceAll('_', ' ')).join(', ') || 'Foundational only'}</dd></div>
+              {selectedTool.holder ? <div><dt>Holder</dt><dd>{selectedTool.holder.label}</dd></div> : null}
+            </dl>
           <p className="empty-state">Tool data remains foundational catalog data. Feeds, speeds, holders, and assemblies are not modeled yet.</p>
         </div>
       );
@@ -1237,6 +1463,7 @@ function App() {
                 <span>Highest risk: <strong>{state.draftPlan.summary.highestRisk}</strong></span>
                 <span>Cycle time: <strong>{state.draftPlan.estimatedCycleTimeMinutes.toFixed(1)} min</strong></span>
                 <span>Operation preview: <strong>derived only</strong></span>
+                <span>Legend: <strong>geometry</strong> / extracted feature / operation preview / depth-assumed preview</span>
               </div>
             </>
           ) : state.currentModel ? (

@@ -187,4 +187,33 @@ describe('workbenchReducer', () => {
     expect(regenerated.dirty).toBe(true);
     expect(regenerated.draftPlan?.operations[0]?.order).toBe(0);
   });
+
+  it('tracks manual depth overrides through reducer edits and project persistence', () => {
+    const state = stateWithPlan();
+    const operation = state.draftPlan!.operations.find((entry) => entry.kind === 'pocket')!;
+
+    const edited = workbenchReducer(state, {
+      type: 'updateOperation',
+      operationId: operation.id,
+      changes: {
+        depthProfile: {
+          ...operation.depthProfile!,
+          targetDepthMm: 11.5,
+          fieldSources: {
+            ...operation.depthProfile!.fieldSources,
+            targetDepth: 'manual_override',
+          },
+        },
+      },
+      message: 'manual depth override',
+    });
+
+    const editedOperation = edited.draftPlan!.operations.find((entry) => entry.id === operation.id)!;
+    expect(editedOperation.depthProfile?.targetDepthMm).toBe(11.5);
+    expect(editedOperation.depthProfile?.fieldSources?.targetDepth).toBe('manual_override');
+    expect(editedOperation.source).toBe('edited');
+
+    const projectRecord = buildProjectRecord(edited);
+    expect(projectRecord?.plan.operations.find((entry) => entry.id === operation.id)?.depthProfile?.fieldSources?.targetDepth).toBe('manual_override');
+  });
 });

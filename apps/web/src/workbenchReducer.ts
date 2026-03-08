@@ -56,7 +56,7 @@ export type WorkbenchAction =
   | { type: 'redo'; message: string }
   | { type: 'log'; message: string };
 
-type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId' | 'featureId'>;
+type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId' | 'featureId' | 'depthProfile'>;
 
 export const initialWorkbenchState: WorkbenchState = {
   sample: null,
@@ -248,14 +248,25 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
     links: baseOperation?.links ?? [{ featureId: feature.id, sourceGeometryRefs: feature.sourceGeometryRefs }],
     warnings: baseOperation?.warnings ?? [],
     assumptions: baseOperation?.assumptions ?? [],
-    machiningIntent: feature.machiningIntent,
-    depthProfile: baseOperation?.depthProfile ?? relatedOperation?.depthProfile ?? (feature.depthModel
-      ? {
+      machiningIntent: feature.machiningIntent,
+      depthProfile: baseOperation?.depthProfile ?? relatedOperation?.depthProfile ?? (feature.depthModel
+        ? {
           setupPlane: feature.depthModel.setupPlane,
+          setupReference: feature.depthModel.setupReference,
           stockTop: feature.depthModel.stockTop,
+          stockBottom: feature.depthModel.stockBottom,
+          topReference: feature.depthModel.topReference,
+          bottomReference: feature.depthModel.bottomReference,
           floorLevel: feature.depthModel.floorLevel,
           depthRange: feature.depthModel.depthRange,
           ...(feature.depthMm > 0 ? { targetDepthMm: feature.depthMm } : {}),
+          depthStatus: feature.depthModel.depthStatus,
+          unknownDepthReason: feature.depthModel.unknownDepthReason,
+          fieldSources: {
+            ...(feature.depthMm > 0 ? { targetDepth: feature.origin === 'geometry_inferred' ? 'assumed' : 'generated', floorLevel: feature.origin === 'geometry_inferred' ? 'assumed' : 'generated', bottomBehavior: feature.origin === 'geometry_inferred' ? 'assumed' : 'generated' } : {}),
+            topReference: 'generated',
+          },
+          overridePreserved: false,
           assumptions: feature.depthModel.assumptions,
           warnings: feature.depthModel.warnings,
         }

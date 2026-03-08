@@ -141,8 +141,22 @@ describe('planPart', () => {
 
     expect(inferredFeature?.depthModel?.assumptions[0]?.source).toBe('import_default');
     expect(inferredFeature?.depthModel?.warnings[0]?.code).toBe('depth_assumed_from_2d');
+    expect(inferredFeature?.depthModel?.depthStatus).toBe('assumed');
     expect(inferredOperation?.depthProfile?.assumptions[0]?.label).toContain('Depth assumed');
     expect(inferredOperation?.depthProfile?.floorLevel?.zMm).toBeLessThan(0);
+    expect(inferredOperation?.depthProfile?.bottomReference?.behavior).toBeDefined();
+  });
+
+  it('adds depth-aware pass planning and tool-class selection details to generated operations', () => {
+    const plan = planPart(samplePartInput);
+    const slotOperation = plan.operations.find((operation) => operation.kind === 'slot');
+    const pocketOperation = plan.operations.find((operation) => operation.kind === 'pocket' && operation.name.includes('Finish'));
+
+    expect(slotOperation?.toolClass).toBe('small_slot_end_mill');
+    expect(slotOperation?.toolSelectionReason?.ruleId).toBe('tool-rule-slot-narrow');
+    expect(slotOperation?.depthProfile?.passDepthPlan?.roughingLayerCount).toBeGreaterThan(0);
+    expect(slotOperation?.depthProfile?.fieldSources?.targetDepth).toBe('generated');
+    expect(pocketOperation?.depthProfile?.passDepthPlan?.finishPass).toBe('wall_and_floor');
   });
 
   it('marks approved plans with reviewer information', () => {
@@ -269,5 +283,38 @@ EOF`;
 
     expect(regenerated.features.find((feature) => feature.id === featureId)?.kind).toBe('slot');
     expect(regenerated.operations.some((operation) => operation.featureId === featureId && operation.kind === 'slot')).toBe(true);
+  });
+
+  it('preserves manual depth overrides on regenerated operations without freezing the whole operation', () => {
+    const plan = planPart(samplePartInput);
+    const operation = plan.operations.find((entry) => entry.kind === 'pocket' && entry.name.includes('Rough'))!;
+    const updatedPlan = {
+      ...plan,
+      operations: plan.operations.map((entry) => entry.id === operation.id
+        ? {
+            ...entry,
+            source: 'edited' as const,
+            depthProfile: {
+              ...entry.depthProfile!,
+              targetDepthMm: 9.5,
+              fieldSources: {
+                ...entry.depthProfile!.fieldSources,
+                targetDepth: 'manual_override' as const,
+              },
+            },
+          }
+        : entry),
+    };
+
+    const regenerated = regenerateDraftPlan(updatedPlan, {
+      selectedFeatureIds: [operation.featureId],
+      preserveFrozenEdited: true,
+    });
+    const regeneratedOperation = regenerated.operations.find((entry) => entry.id === operation.id)!;
+
+    expect(regeneratedOperation.depthProfile?.targetDepthMm).toBe(9.5);
+    expect(regeneratedOperation.depthProfile?.fieldSources?.targetDepth).toBe('manual_override');
+    expect(regeneratedOperation.depthProfile?.overridePreserved).toBe(true);
+    expect(regeneratedOperation.source).toBe('edited');
   });
 });
