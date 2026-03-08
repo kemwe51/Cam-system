@@ -12,8 +12,10 @@ type Viewport3DProps = {
   operations: Operation[];
   selectedFeatureId: string | null;
   selectedOperationId: string | null;
+  selectedGeometryId: string | null;
   onSelectFeature: (featureId: string) => void;
   onSelectOperation: (operationId: string) => void;
+  onSelectGeometry: (geometryId: string) => void;
   viewOrientation: ViewOrientation;
   viewMode: ViewMode;
 };
@@ -69,13 +71,29 @@ function bodyOutlinePoints(size: [number, number, number]): Array<[number, numbe
   ];
 }
 
-function EntityMesh({ entity, fragment, selected, wireframe, onSelect }: { entity: ModelEntity; fragment: ImportedModel['fragments'][number] | undefined; selected: boolean; wireframe: boolean; onSelect: (featureId: string) => void }) {
+function EntityMesh({
+  entity,
+  fragment,
+  selected,
+  wireframe,
+  onSelectFeature,
+  onSelectGeometry,
+}: {
+  entity: ModelEntity;
+  fragment: ImportedModel['fragments'][number] | undefined;
+  selected: boolean;
+  wireframe: boolean;
+  onSelectFeature: (featureId: string) => void;
+  onSelectGeometry: (geometryId: string) => void;
+}) {
   const baseColor = selected ? '#f8fafc' : fragment?.color ?? '#94a3b8';
   const select = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation();
     if (entity.featureId) {
-      onSelect(entity.featureId);
+      onSelectFeature(entity.featureId);
+      return;
     }
+    onSelectGeometry(entity.id);
   };
 
   if (!fragment) {
@@ -99,6 +117,25 @@ function EntityMesh({ entity, fragment, selected, wireframe, onSelect }: { entit
     return (
       <group position={[fragment.position[0], fragment.position[1], fragment.position[2] + fragment.size[2] / 2]} onClick={select}>
         <Line points={outlinePoints} color={baseColor} lineWidth={selected ? 3.2 : 2.2} />
+      </group>
+    );
+  }
+
+  if (fragment.kind === 'geometry_path' && fragment.points.length >= 2) {
+    return (
+      <group position={[0, 0, fragment.position[2]]} onClick={select}>
+        <Line points={fragment.points} color={baseColor} lineWidth={selected ? 2.8 : fragment.closed ? 2.2 : 1.6} />
+      </group>
+    );
+  }
+
+  if (fragment.kind === 'geometry_point') {
+    return (
+      <group position={fragment.position} onClick={select}>
+        <mesh>
+          <sphereGeometry args={[selected ? 1.2 : 0.8, 16, 16]} />
+          <meshStandardMaterial color={baseColor} />
+        </mesh>
       </group>
     );
   }
@@ -177,11 +214,11 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
   );
 }
 
-function DerivedScene({ model, operations, selectedFeatureId, selectedOperationId, onSelectFeature, onSelectOperation, viewOrientation, viewMode }: Viewport3DProps) {
+function DerivedScene({ model, operations, selectedFeatureId, selectedOperationId, selectedGeometryId, onSelectFeature, onSelectOperation, onSelectGeometry, viewOrientation, viewMode }: Viewport3DProps) {
   const operationPreviews = useMemo(() => buildOperationPreviewLayer(model, operations), [model, operations]);
   const scene = useMemo(
-    () => buildScenePipeline(model, operationPreviews, selectedFeatureId, selectedOperationId),
-    [model, operationPreviews, selectedFeatureId, selectedOperationId],
+    () => buildScenePipeline(model, operationPreviews, selectedFeatureId, selectedOperationId, selectedGeometryId),
+    [model, operationPreviews, selectedFeatureId, selectedOperationId, selectedGeometryId],
   );
   const selectedEntity = scene.selectionLayer.entity;
   const stockEdges = useMemo(
@@ -191,6 +228,7 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
   const fragmentById = scene.fragments;
   const entityById = useMemo(() => new Map(model.entities.map((entity) => [entity.id, entity])), [model.entities]);
   const wireframe = viewMode === 'wireframe';
+  const showImportedGeometry = true;
   const showFeatures = viewMode === 'shaded' || viewMode === 'wireframe' || viewMode === 'features';
   const showOperationPreview = viewMode === 'operation_preview' || Boolean(selectedOperationId);
   const stockOpacity = viewMode === 'stock' ? 0.42 : 0.22;
@@ -211,6 +249,19 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
           <lineSegments geometry={stockEdges}>
             <lineBasicMaterial color="#94a3b8" />
           </lineSegments>
+          {showImportedGeometry
+            ? scene.importedGeometryLayer.entities.map((entity) => (
+                <EntityMesh
+                  key={entity.id}
+                  entity={entity}
+                  fragment={fragmentById.get(entity.fragmentIds[0] ?? '')}
+                  selected={selectedGeometryId === entity.id || scene.selectionLayer.entity?.id === entity.id}
+                  wireframe
+                  onSelectFeature={onSelectFeature}
+                  onSelectGeometry={onSelectGeometry}
+                />
+              ))
+            : null}
           {showFeatures
             ? scene.featureLayer.entities.map((entity) => (
                 <EntityMesh
@@ -219,7 +270,8 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
                   fragment={fragmentById.get(entity.fragmentIds[0] ?? '')}
                   selected={selectedFeatureId === entity.featureId}
                   wireframe={wireframe || viewMode === 'features'}
-                  onSelect={onSelectFeature}
+                  onSelectFeature={onSelectFeature}
+                  onSelectGeometry={onSelectGeometry}
                 />
               ))
             : null}
@@ -250,7 +302,17 @@ function DerivedScene({ model, operations, selectedFeatureId, selectedOperationI
 }
 
 export function Viewport3D(props: Viewport3DProps) {
-  const disclaimer = useMemo(() => buildScenePipeline(props.model, buildOperationPreviewLayer(props.model, props.operations), props.selectedFeatureId, props.selectedOperationId).disclaimer, [props.model, props.operations, props.selectedFeatureId, props.selectedOperationId]);
+  const disclaimer = useMemo(
+    () =>
+      buildScenePipeline(
+        props.model,
+        buildOperationPreviewLayer(props.model, props.operations),
+        props.selectedFeatureId,
+        props.selectedOperationId,
+        props.selectedGeometryId,
+      ).disclaimer,
+    [props.model, props.operations, props.selectedFeatureId, props.selectedOperationId, props.selectedGeometryId],
+  );
 
   return (
     <div className="viewport-stage">

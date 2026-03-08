@@ -16,6 +16,7 @@
     "test": "vitest run src/index.test.ts"
   },
   "dependencies": {
+    "@cam/geometry2d": "file:../geometry2d",
     "@cam/shared": "file:../shared"
   }
 }

@@ -19,6 +19,13 @@ import {
   type RiskLevel,
   type Tool,
 } from '@cam/shared';
+import {
+  buildGeometryGraph,
+  geometry2DDocumentSchema,
+  type GeometryBounds,
+  type Geometry2DDocument,
+  type GeometryGraph,
+} from '@cam/geometry2d';
 
 const featureKindOrder = [
   'top_surface',
@@ -33,6 +40,38 @@ const featureKindOrder = [
 const narrowMillingWidthThresholdMm = 8;
 const narrowSlotWidthThresholdMm = 6;
 const defaultSetupId = defaultSetups[0]?.id ?? 'setup-1';
+const inferredDepthMm = 1;
+const inferredStockZMm = 6;
+
+export type GeometryFeatureInferenceKind =
+  | 'outside_contour'
+  | 'inside_contour'
+  | 'pocket'
+  | 'hole_group'
+  | 'slot'
+  | 'engraving'
+  | 'unclassified';
+
+export type GeometryFeatureInference = {
+  id: string;
+  label: string;
+  kind: GeometryFeatureInferenceKind;
+  mappedFeatureKind?: Extract<NormalizedFeature['kind'], 'contour' | 'pocket' | 'slot' | 'hole_group' | 'engraving'>;
+  plannedFeatureId?: string;
+  sourceGeometryRefs: string[];
+  confidence: number;
+  inferenceMethod: string;
+  warnings: string[];
+  bounds: GeometryBounds;
+};
+
+export type GeometryFeatureExtractionResult = {
+  graph: GeometryGraph;
+  features: GeometryFeatureInference[];
+  unclassifiedEntityIds: string[];
+  warnings: string[];
+  partInput: PartInput;
+};
 
 function highestRisk(risks: Risk[]): RiskLevel {
   if (risks.some((risk) => risk.level === 'high')) {
@@ -50,6 +89,26 @@ function createFeatureId(kind: string, index: number, sourceId?: string): string
   return sourceId ?? `${kind}-${index + 1}`;
 }
 
+function sanitizeId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+}
+
+function copyFeatureMetadata(
+  source: Pick<
+    PartInput['contours'][number],
+    'sourceGeometryRefs' | 'inferenceMethod' | 'confidence' | 'warnings' | 'origin' | 'classificationState'
+  >,
+) {
+  return {
+    sourceGeometryRefs: source.sourceGeometryRefs,
+    ...(source.inferenceMethod ? { inferenceMethod: source.inferenceMethod } : {}),
+    confidence: source.confidence,
+    warnings: source.warnings,
+    origin: source.origin,
+    classificationState: source.classificationState,
+  };
+}
+
 function normalizePart(part: PartInput): NormalizedFeature[] {
   const features: NormalizedFeature[] = [];
 
@@ -65,6 +124,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: Math.sqrt(surface.areaMm2),
       areaMm2: surface.areaMm2,
       notes: [`Finish target: ${surface.finish}`],
+      ...copyFeatureMetadata(surface),
     });
   });
 
@@ -80,6 +140,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: 0,
       areaMm2: contour.lengthMm * contour.depthMm,
       notes: ['Structured contour input normalized as a profile boundary.'],
+      ...copyFeatureMetadata(contour),
     });
   });
 
@@ -95,6 +156,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: pocket.widthMm,
       areaMm2: pocket.lengthMm * pocket.widthMm,
       notes: ['Pocket kept rectangular in v2; no freeform geometry is assumed.'],
+      ...copyFeatureMetadata(pocket),
     });
   });
 
@@ -110,6 +172,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: slot.widthMm,
       areaMm2: slot.lengthMm * slot.widthMm,
       notes: ['Slot width drives tool selection and machinability risk.'],
+      ...copyFeatureMetadata(slot),
     });
   });
 
@@ -125,6 +188,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: holeGroup.diameterMm,
       areaMm2: Math.PI * (holeGroup.diameterMm / 2) ** 2 * holeGroup.count,
       notes: [`Pattern: ${holeGroup.pattern}`],
+      ...copyFeatureMetadata(holeGroup),
     });
   });
 
@@ -140,6 +204,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: chamfer.sizeMm,
       areaMm2: chamfer.lengthMm * chamfer.sizeMm,
       notes: ['Chamfer modeled as an edge break request only.'],
+      ...copyFeatureMetadata(chamfer),
     });
   });
 
@@ -155,6 +220,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       widthMm: 0.2,
       areaMm2: engraving.lengthMm * 0.2,
       notes: [`Text: ${engraving.text}`],
+      ...copyFeatureMetadata(engraving),
     });
   });
 
@@ -249,7 +315,256 @@ function featureRisks(feature: NormalizedFeature, part: PartInput): Risk[] {
     });
   }
 
+  if (feature.origin === 'geometry_inferred' && feature.confidence < 0.85) {
+    risks.push({
+      id: `${feature.id}-risk-inference`,
+      level: feature.confidence < 0.65 ? 'high' : 'medium',
+      title: 'DXF-derived feature needs classification review',
+      description:
+        'Feature came from inferred 2D geometry with limited confidence. Confirm classification, depth, and machining intent before release.',
+      featureId: feature.id,
+    });
+  }
+
   return risks;
+}
+
+function geometryPartId(document: Geometry2DDocument): string {
+  return `dxf-${document.id.replace(/^geometry-/, '')}`;
+}
+
+function loopBoundsSize(bounds: GeometryFeatureInference['bounds']): number {
+  return Math.max(bounds.size.x, bounds.size.y, 0.1);
+}
+
+function isElongated(bounds: GeometryFeatureInference['bounds']): boolean {
+  const major = Math.max(bounds.size.x, bounds.size.y, 0.1);
+  const minor = Math.max(Math.min(bounds.size.x, bounds.size.y), 0.1);
+  return major / minor >= 3;
+}
+
+export function extractGeometryFeatures(documentInput: Geometry2DDocument, graphInput?: GeometryGraph): GeometryFeatureExtractionResult {
+  const document = geometry2DDocumentSchema.parse(documentInput);
+  const graph = graphInput ? graphInput : buildGeometryGraph(document);
+  const warnings = [...document.warnings.map((warning) => warning.message)];
+  const features: GeometryFeatureInference[] = [];
+  const containedLoopIds = new Set(graph.regions.flatMap((region) => region.innerLoopIds));
+  const topLevelLoops = graph.loops.filter((loop) => !containedLoopIds.has(loop.id));
+  const outerLoop = [...topLevelLoops].sort((left, right) => right.area - left.area)[0];
+
+  if (!outerLoop) {
+    warnings.push('No closed outer profile was detected. Draft planning will remain partial and may omit contour coverage.');
+  }
+
+  const closedLoopSet = new Set(graph.closedProfileIds);
+  graph.loops.forEach((loop) => {
+    const bounds = loop.bounds;
+    const isCircle = loop.entityIds.length === 1 && document.entities.find((entity) => entity.id === loop.entityIds[0])?.type === 'circle';
+    if (isCircle) {
+      const id = `inference-hole-${features.length + 1}`;
+      features.push({
+        id,
+        label: `Hole ${features.filter((feature) => feature.kind === 'hole_group').length + 1}`,
+        kind: 'hole_group',
+        mappedFeatureKind: 'hole_group',
+        plannedFeatureId: id,
+        sourceGeometryRefs: loop.entityIds,
+        confidence: 0.98,
+        inferenceMethod: 'circle entity preserved as a grouped hole candidate',
+        warnings: ['Depth is not present in DXF. Hole depth defaults must be reviewed manually before release.'],
+        bounds,
+      });
+      return;
+    }
+
+    if (!closedLoopSet.has(graph.profiles.find((profile) => profile.loopId === loop.id)?.id ?? '')) {
+      return;
+    }
+
+    const inferenceWarnings: string[] = [];
+    const topLevel = outerLoop?.id === loop.id;
+    let kind: GeometryFeatureInferenceKind = topLevel ? 'outside_contour' : 'inside_contour';
+    let mappedFeatureKind: GeometryFeatureInference['mappedFeatureKind'] = 'contour';
+    let confidence = topLevel ? 0.92 : 0.68;
+    let inferenceMethod = topLevel
+      ? 'largest top-level closed loop promoted as the outside contour candidate'
+      : 'closed loop preserved as an internal contour candidate';
+
+    if (!topLevel && isElongated(bounds)) {
+      kind = 'slot';
+      mappedFeatureKind = 'slot';
+      confidence = 0.74;
+      inferenceMethod = 'elongated internal closed loop promoted as a slot candidate';
+      inferenceWarnings.push('Slot classification is heuristic. Confirm wall style, tool diameter, and actual slot intent.');
+    } else if (!topLevel && outerLoop) {
+      kind = 'pocket';
+      mappedFeatureKind = 'pocket';
+      confidence = 0.82;
+      inferenceMethod = 'internal closed loop nested inside the outside contour promoted as a pocket candidate';
+      inferenceWarnings.push('Pocket depth is not encoded in DXF and defaults must be reviewed manually.');
+    }
+
+    features.push({
+      id: `inference-${sanitizeId(kind)}-${features.length + 1}`,
+      label:
+        kind === 'outside_contour'
+          ? 'Outside contour'
+          : kind === 'inside_contour'
+            ? `Inside contour ${features.filter((feature) => feature.kind === 'inside_contour').length + 1}`
+            : `${kind.replace('_', ' ')} ${features.filter((feature) => feature.kind === kind).length + 1}`,
+      kind,
+      mappedFeatureKind,
+      plannedFeatureId: `inference-${sanitizeId(kind)}-${features.length + 1}`,
+      sourceGeometryRefs: loop.entityIds,
+      confidence,
+      inferenceMethod,
+      warnings: inferenceWarnings,
+      bounds,
+    });
+  });
+
+  document.entities
+    .filter((entity): entity is Extract<Geometry2DDocument['entities'][number], { type: 'text' }> => entity.type === 'text' && entity.text.trim().length > 0)
+    .forEach((entity) => {
+      const textLengthMm = Math.max((entity.height ?? 2) * Math.max(entity.text.length * 0.6, 1), 1);
+      features.push({
+        id: `inference-engraving-${features.length + 1}`,
+        label: `Engraving ${features.filter((feature) => feature.kind === 'engraving').length + 1}`,
+        kind: 'engraving',
+        mappedFeatureKind: 'engraving',
+        plannedFeatureId: `inference-engraving-${features.length + 1}`,
+        sourceGeometryRefs: [entity.id],
+        confidence: 0.9,
+        inferenceMethod: 'TEXT/MTEXT entities promoted as marking-only engraving candidates',
+      warnings: ['Text entities are treated as marking metadata only. Stroke shape and font path are not interpreted.'],
+        bounds: {
+          min: { x: entity.position.x, y: entity.position.y },
+          max: { x: entity.position.x + textLengthMm, y: entity.position.y + (entity.height ?? 2) },
+          size: { x: textLengthMm, y: entity.height ?? 2 },
+          center: { x: entity.position.x + textLengthMm / 2, y: entity.position.y + (entity.height ?? 2) / 2 },
+        },
+      });
+    });
+
+  const classifiedGeometryIds = new Set(features.flatMap((feature) => feature.sourceGeometryRefs));
+  const unclassifiedEntityIds = document.entities
+    .filter((entity) => entity.type !== 'unsupported')
+    .filter((entity) => !classifiedGeometryIds.has(entity.id))
+    .map((entity) => entity.id);
+
+  if (unclassifiedEntityIds.length > 0) {
+    warnings.push(`${unclassifiedEntityIds.length} geometry entities remain unclassified and require manual review.`);
+  }
+
+  const geometryBounds = document.bounds.size;
+  const stockMargin = document.units === 'inch' ? 0.25 : 5;
+  const stockX = Math.max(geometryBounds.x + stockMargin * 2, 10);
+  const stockY = Math.max(geometryBounds.y + stockMargin * 2, 10);
+
+  const contours = features
+    .filter((feature) => feature.mappedFeatureKind === 'contour')
+    .map((feature) => ({
+      id: feature.plannedFeatureId,
+      name: feature.label,
+      lengthMm: loopBoundsSize(feature.bounds),
+      depthMm: inferredDepthMm,
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      inferenceMethod: feature.inferenceMethod,
+      confidence: feature.confidence,
+      warnings: feature.warnings,
+      origin: 'geometry_inferred' as const,
+      classificationState: 'automatic' as const,
+    }));
+
+  const pockets = features
+    .filter((feature) => feature.mappedFeatureKind === 'pocket')
+    .map((feature) => ({
+      id: feature.plannedFeatureId,
+      name: feature.label,
+      lengthMm: Math.max(feature.bounds.size.x, feature.bounds.size.y),
+      widthMm: Math.min(feature.bounds.size.x, feature.bounds.size.y),
+      depthMm: inferredDepthMm,
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      inferenceMethod: feature.inferenceMethod,
+      confidence: feature.confidence,
+      warnings: feature.warnings,
+      origin: 'geometry_inferred' as const,
+      classificationState: 'automatic' as const,
+    }));
+
+  const slots = features
+    .filter((feature) => feature.mappedFeatureKind === 'slot')
+    .map((feature) => ({
+      id: feature.plannedFeatureId,
+      name: feature.label,
+      lengthMm: Math.max(feature.bounds.size.x, feature.bounds.size.y),
+      widthMm: Math.min(feature.bounds.size.x, feature.bounds.size.y),
+      depthMm: inferredDepthMm,
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      inferenceMethod: feature.inferenceMethod,
+      confidence: feature.confidence,
+      warnings: feature.warnings,
+      origin: 'geometry_inferred' as const,
+      classificationState: 'automatic' as const,
+    }));
+
+  const holeGroups = features
+    .filter((feature) => feature.mappedFeatureKind === 'hole_group')
+    .map((feature) => ({
+      id: feature.plannedFeatureId,
+      name: feature.label,
+      count: 1,
+      diameterMm: Math.max(feature.bounds.size.x, feature.bounds.size.y),
+      depthMm: inferredDepthMm,
+      pattern: 'custom' as const,
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      inferenceMethod: feature.inferenceMethod,
+      confidence: feature.confidence,
+      warnings: feature.warnings,
+      origin: 'geometry_inferred' as const,
+      classificationState: 'automatic' as const,
+    }));
+
+  const engraving = features
+    .filter((feature) => feature.mappedFeatureKind === 'engraving')
+    .map((feature, index) => ({
+      id: feature.plannedFeatureId,
+      name: feature.label,
+      text: `Imported text ${index + 1}`,
+      lengthMm: Math.max(feature.bounds.size.x, 1),
+      depthMm: 0.2,
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      inferenceMethod: feature.inferenceMethod,
+      confidence: feature.confidence,
+      warnings: feature.warnings,
+      origin: 'geometry_inferred' as const,
+      classificationState: 'automatic' as const,
+    }));
+
+  return {
+    graph,
+    features,
+    unclassifiedEntityIds,
+    warnings,
+    partInput: partInputSchema.parse({
+      partId: geometryPartId(document),
+      partName: `${document.id} DXF import`,
+      revision: 'dxf-v4',
+      stock: {
+        material: 'UNSPECIFIED_FROM_DXF',
+        xMm: stockX,
+        yMm: stockY,
+        zMm: inferredStockZMm,
+      },
+      topSurfaces: [],
+      contours,
+      pockets,
+      slots,
+      holeGroups,
+      chamfers: [],
+      engraving,
+    }),
+  };
 }
 
 function createOperation(

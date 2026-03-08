@@ -6,6 +6,17 @@ const optionalId = z.string().min(1).optional();
 const isoDateTimeSchema = z.string().datetime();
 
 const featureNameSchema = z.string().min(1);
+const featureOriginSchema = z.enum(['structured', 'geometry_inferred']);
+const featureClassificationStateSchema = z.enum(['automatic', 'manual_override', 'ignored']);
+
+const featureSourceMetadataSchema = z.object({
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+  inferenceMethod: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(1),
+  warnings: z.array(z.string()).default([]),
+  origin: featureOriginSchema.default('structured'),
+  classificationState: featureClassificationStateSchema.default('automatic'),
+});
 
 export const stockSchema = z.object({
   material: z.string().min(1),
@@ -19,14 +30,14 @@ export const topSurfaceSchema = z.object({
   name: featureNameSchema,
   areaMm2: positiveNumber,
   finish: z.enum(['as_stock', 'face_milled', 'ground']).default('face_milled'),
-});
+}).merge(featureSourceMetadataSchema);
 
 export const contourSchema = z.object({
   id: optionalId,
   name: featureNameSchema,
   lengthMm: positiveNumber,
   depthMm: positiveNumber,
-});
+}).merge(featureSourceMetadataSchema);
 
 export const pocketSchema = z.object({
   id: optionalId,
@@ -34,7 +45,7 @@ export const pocketSchema = z.object({
   lengthMm: positiveNumber,
   widthMm: positiveNumber,
   depthMm: positiveNumber,
-});
+}).merge(featureSourceMetadataSchema);
 
 export const slotSchema = z.object({
   id: optionalId,
@@ -42,7 +53,7 @@ export const slotSchema = z.object({
   lengthMm: positiveNumber,
   widthMm: positiveNumber,
   depthMm: positiveNumber,
-});
+}).merge(featureSourceMetadataSchema);
 
 export const holeGroupSchema = z.object({
   id: optionalId,
@@ -51,14 +62,14 @@ export const holeGroupSchema = z.object({
   diameterMm: positiveNumber,
   depthMm: positiveNumber,
   pattern: z.enum(['line', 'rectangle', 'polar', 'custom']),
-});
+}).merge(featureSourceMetadataSchema);
 
 export const chamferSchema = z.object({
   id: optionalId,
   name: featureNameSchema,
   lengthMm: positiveNumber,
   sizeMm: positiveNumber,
-});
+}).merge(featureSourceMetadataSchema);
 
 export const engravingSchema = z.object({
   id: optionalId,
@@ -66,7 +77,7 @@ export const engravingSchema = z.object({
   text: z.string().min(1),
   lengthMm: positiveNumber,
   depthMm: positiveNumber,
-});
+}).merge(featureSourceMetadataSchema);
 
 export const partInputSchema = z.object({
   partId: z.string().min(1),
@@ -105,6 +116,12 @@ export const normalizedFeatureSchema = z.object({
   widthMm: nonNegativeNumber,
   areaMm2: nonNegativeNumber,
   notes: z.array(z.string()),
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+  inferenceMethod: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(1),
+  warnings: z.array(z.string()).default([]),
+  origin: featureOriginSchema.default('structured'),
+  classificationState: featureClassificationStateSchema.default('automatic'),
 });
 
 export const toolTypeSchema = z.enum(['face_mill', 'flat_end_mill', 'drill', 'chamfer_mill', 'engraver']);
@@ -211,7 +228,7 @@ export const planSummarySchema = z.object({
 });
 
 export const selectedEntitySchema = z.object({
-  type: z.enum(['feature', 'operation', 'risk', 'checklist', 'review', 'approval', 'tool', 'project']),
+  type: z.enum(['feature', 'operation', 'risk', 'checklist', 'review', 'approval', 'tool', 'project', 'geometry']),
   id: z.string().min(1),
 });
 

@@ -2,47 +2,61 @@
 
 Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop CAM workflow focused on 2D and 2.5D milling.
 
-## Geometry & Import Pipeline v3
+## DXF & 2D Geometry Pipeline v4
 
 This milestone moves the repo from a structured-plan workbench into a more geometry-aware authoring foundation while staying explicit about what is still derived, foundational, or not implemented yet.
 
 ### What is implemented now
 
+- **2D geometry domain** in `@cam/geometry2d`
+  - explicit `Geometry2DDocument`, `Geometry2DEntity`, `GeometryLayer`, `GeometryBounds`, `GeometryTransform`, `GeometryLoop`, `GeometryChain`, `GeometryProfile`, `GeometryRegion`, `GeometryNode`, `GeometryEdge`, `GeometryGraph`, `GeometryWarning`, `GeometryUnit`, and `GeometrySourceRef`
+  - stable entity ids, explicit unit metadata, layer visibility metadata, document bounds, and a tolerance-aware graph builder for imported planar data
+  - no fake B-Rep claims: this package stays 2D-focused and honest
 - **Geometry/model foundation** in `@cam/model`
-  - explicit `ModelSource`, `ImportedModel`, `ModelEntity`, `ModelView`, `ModelBounds`, `ModelLayer`, `ModelSelection`, `DerivedGeometryFragment`, `FeatureGeometryLink`, `OperationPreview`, `ViewPreset`, and `ViewMode`
-  - stable ids for source/model/feature/preview entities so saved UI selection and future mappings have durable anchors
-  - derived geometry + source metadata modeling without pretending to be a CAD kernel or B-Rep
-- **Importer workflow v3**
+  - explicit imported geometry, extracted feature, and operation-preview modeling on top of the existing `ImportedModel` / `ModelEntity` / `ModelView` contracts
+  - stable ids for source geometry, extracted features, plan features, and previews so mappings remain durable across import → plan → review
+  - viewport fragments now distinguish raw imported geometry, extracted feature overlays, and operation preview overlays
+- **Importer workflow v4**
   - real JSON importer returning structured source metadata, warnings, imported model data, and deterministic part input when available
-  - DXF and STEP routes now participate honestly in the workflow with explicit placeholder import sessions and actionable warnings
+  - real DXF importer for a practical planar subset with explicit unsupported-entity warnings
+  - STEP remains an honest placeholder session only
   - importer registry for choosing adapters by file type
-- **API import workflow + persistence v3**
+- **First deterministic DXF-derived feature extraction**
+  - outside contour candidates from outer closed profiles
+  - internal pocket / slot / inside-contour candidates from closed internal geometry using explicit heuristics
+  - hole candidates from circles
+  - text promoted to marking-only engraving candidates when clearly present
+  - unclassified geometry is preserved as unclassified instead of being silently invented into a machining feature
+- **API import workflow + persistence v4**
   - `POST /imports/json`, `POST /imports/dxf`, `POST /imports/step`, `GET /imports/:id`
   - project persistence upgraded from a simple draft blob toward explicit `ImportSessionRecord`, `ProjectRecord`, and lightweight `ProjectRevisionRecord`
   - saved projects now track source import id/type/filename, derived model metadata, warnings, approval state, and revision history
-- **Workbench v3 flow**
+- **Workbench v4 flow**
   - import source → derive model → derive plan → manually edit → review → save/approve
-  - project/import start flow for sample JSON, pasted JSON, and DXF/STEP placeholder sessions
+  - project/import start flow for sample JSON, pasted JSON, pasted DXF text, and honest STEP placeholders
+  - imported geometry panel with layers, entity counts, open/closed profile counts, and warnings
   - top-bar metadata for source type, model status, warnings, and unsaved state
   - local undo/redo for workbench edits
-- **Viewport pipeline v3**
-  - explicit scene builder layered into source/model, stock, feature, selection, and operation preview layers
+- **Viewport pipeline v4**
+  - explicit scene builder layered into imported geometry, stock, extracted features, selection, and operation preview layers
   - stable entity ids across rebuilds
-  - operation preview overlays linked to feature ids and operation ids
+  - open-chain vs closed-loop distinction, top-view-friendly review, and selected-entity highlighting for imported 2D geometry
+  - operation preview overlays linked to extracted feature ids and operation ids
 - **Manual programming improvements**
   - operation-to-feature relinking
   - persistent operation notes
   - per-operation warning badges
+  - source geometry references in the feature inspector
+  - manual reclassification for imported/inferred features (`contour`, `pocket`, `slot`, `hole group`, `ignore`, `unclassified`) with explicit draft warnings
   - project-level unsaved summary and revision summary
 - **AI advisory review context upgrade**
-  - review context now includes source/model metadata, revision metadata, source/model warnings, planning warnings, and manual override notes
+  - review context now includes DXF source metadata, extraction warnings, open/closed profile counts, unclassified geometry summary, and manual reclassification context
 
 ## What is still foundational or derived only
 
 This repository still does **not** implement:
 
 - real STEP parsing or STEP-derived machining
-- real DXF parsing or DXF-derived machining
 - a B-Rep, solid-model, or CAD kernel
 - verified toolpath generation or machining simulation
 - postprocessing or production G-code output
@@ -50,9 +64,10 @@ This repository still does **not** implement:
 
 Important honesty boundary:
 
-- The viewport is a **derived visualization from import metadata, structured JSON, and deterministic plan state**.
+- The viewport is a **derived visualization from imported geometry, extracted feature overlays, structured JSON, and deterministic plan state**.
 - Operation preview is an **operation preview**, not a toolpath.
-- DXF and STEP adapters are **workflow-level placeholders only**.
+- DXF support is **practical-subset only**, not full DXF support.
+- STEP remains a **workflow-level placeholder only**.
 - AI review is **advisory only** and never overrides deterministic planning authority.
 
 ## Workspaces
@@ -60,10 +75,11 @@ Important honesty boundary:
 - `apps/web`: React + Vite CAM workbench UI
 - `apps/api`: HTTP API for imports, planning, persistence, review, and approval
 - `packages/shared`: shared domain types, Zod schemas, default catalog data
+- `packages/geometry2d`: 2D geometry document + graph model and DXF subset parsing
 - `packages/model`: geometry/model pipeline types and derived model helpers
 - `packages/engine`: deterministic planning engine
 - `packages/ai`: advisory OpenAI Responses API integration
-- `packages/importers`: importer interfaces, registry, JSON importer, honest DXF/STEP placeholders
+- `packages/importers`: importer interfaces, registry, JSON importer, practical DXF subset importer, honest STEP placeholder
 - `docs`: architecture and domain notes
 - `examples`: sample part input
 
@@ -113,7 +129,15 @@ Current JSON import behavior:
 - derives a model/session record for viewport and planning handoff
 - returns deterministic part input for the planning engine
 
-Current DXF/STEP behavior:
+Current DXF behavior:
+
+- accepts pasted ASCII DXF text payloads
+- supports `LINE`, `ARC`, `CIRCLE`, `POINT`, `TEXT` / `MTEXT` metadata, `LWPOLYLINE`, and `POLYLINE`
+- builds a 2D geometry document, a tolerance-aware geometry graph, and first-pass extracted feature candidates
+- returns deterministic part input only with explicit planning-default assumptions for stock thickness and feature depths
+- preserves unsupported entities as warnings instead of silently discarding them
+
+Current STEP behavior:
 
 - records source file metadata and creates a placeholder import session
 - returns actionable warnings
@@ -150,14 +174,42 @@ Saved project records now include:
 - **Right dock**: inspector for selected workbench item
 - **Bottom panel**: risks, checklist, AI review, console, metadata/revision summary
 
-## Viewport meaning
+## DXF subset and viewport meaning
+
+Current practical DXF subset:
+
+- `LINE`
+- `ARC`
+- `CIRCLE`
+- `POINT`
+- `TEXT` / `MTEXT` as metadata-only marking input
+- `LWPOLYLINE`
+- `POLYLINE`
+
+Intentionally unsupported in this milestone:
+
+- `SPLINE`
+- `ELLIPSE`
+- blocks / inserts
+- hatches
+- dimensions
+- true 3D DXF entities
+- full annotation semantics
+
+Imported geometry becomes extracted features through:
+
+1. DXF subset parsing into `Geometry2DDocument`
+2. tolerance-aware graph / chain / loop / region building in `@cam/geometry2d`
+3. deterministic feature inference in `@cam/engine`
+4. imported-model + viewport mapping in `@cam/model`
+5. manual review / reclassification in the workbench before approval
 
 The viewport now separates:
 
-- source/model layer
+- imported geometry layer
 - stock layer
-- feature layer
+- extracted feature layer
 - selection layer
 - operation preview layer
 
-These are all derived from structured source metadata and deterministic planning data. They are intentionally labeled as derived model and operation preview only.
+These are all derived from imported 2D geometry, structured source metadata, and deterministic planning data. They are intentionally labeled as imported geometry, extracted features, and operation preview only.

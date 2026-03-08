@@ -23,6 +23,11 @@ type ReviewContext = {
     sourceGeometryMetadata: string[];
     entityCount?: number;
     featureLinkCount?: number;
+    extractedFeatureCount?: number;
+    openProfileCount?: number;
+    closedProfileCount?: number;
+    unclassifiedGeometryCount?: number;
+    extractionWarnings: string[];
   };
   projectContext: {
     projectId?: string;
@@ -87,6 +92,23 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
       ...(typeof context.model?.featureGeometryLinks.length === 'number'
         ? { featureLinkCount: context.model.featureGeometryLinks.length }
         : {}),
+      ...(typeof context.model?.extractedFeatures.length === 'number'
+        ? { extractedFeatureCount: context.model.extractedFeatures.length }
+        : {}),
+      ...(typeof context.model?.geometryGraph?.openProfileIds.length === 'number'
+        ? { openProfileCount: context.model.geometryGraph.openProfileIds.length }
+        : {}),
+      ...(typeof context.model?.geometryGraph?.closedProfileIds.length === 'number'
+        ? { closedProfileCount: context.model.geometryGraph.closedProfileIds.length }
+        : {}),
+      ...(typeof context.model?.geometryDocument?.entities.length === 'number'
+        ? {
+            unclassifiedGeometryCount: context.model.geometryDocument.entities.filter(
+              (entity) => !context.model?.extractedFeatures.some((feature) => feature.sourceGeometryRefs.includes(entity.id)),
+            ).length,
+          }
+        : {}),
+      extractionWarnings: context.model?.extractedFeatures.flatMap((feature) => feature.warnings) ?? [],
     },
     projectContext: {
       ...(context.project?.projectId ? { projectId: context.project.projectId } : {}),
@@ -144,6 +166,21 @@ function heuristicReview(plan: DraftCamPlan, context: ReviewSupplementalContext 
 
   if (context.model?.status === 'placeholder') {
     suggestedEdits.push('Imported model is still a placeholder session. Do not treat DXF/STEP source metadata as machinable geometry.');
+  }
+
+  if ((context.model?.geometryGraph?.openProfileIds.length ?? 0) > 0) {
+    suggestedEdits.push(`Imported geometry still contains ${context.model?.geometryGraph?.openProfileIds.length ?? 0} open profiles. Confirm whether they represent engraving, construction geometry, or missing contour closure.`);
+  }
+
+  const unclassifiedGeometryCount = context.model?.geometryDocument?.entities.filter(
+    (entity) => !context.model?.extractedFeatures.some((feature) => feature.sourceGeometryRefs.includes(entity.id)),
+  ).length ?? 0;
+  if (unclassifiedGeometryCount > 0) {
+    missingOperations.push(`There are ${unclassifiedGeometryCount} unclassified imported geometry entities. Confirm whether they should remain ignored or become machinable features.`);
+  }
+
+  if (context.model?.extractedFeatures.some((feature) => feature.classificationState !== 'automatic')) {
+    suggestedEdits.push('Manual feature reclassifications are present. Confirm that linked operations still match the updated manufacturing intent.');
   }
 
   if (context.project?.revision) {

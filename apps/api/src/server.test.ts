@@ -37,6 +37,58 @@ async function startTestServer() {
 }
 
 const servers: Array<{ close: () => Promise<void> }> = [];
+const sampleDxf = `0
+SECTION
+2
+HEADER
+9
+$INSUNITS
+70
+4
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+8
+OUTER
+90
+4
+70
+1
+10
+0
+20
+0
+10
+80
+20
+0
+10
+80
+20
+50
+10
+0
+20
+50
+0
+CIRCLE
+8
+HOLES
+10
+30
+20
+20
+40
+4
+0
+ENDSEC
+0
+EOF`;
 
 afterAll(async () => {
   await Promise.all(servers.map((entry) => entry.close()));
@@ -107,7 +159,7 @@ describe('CAM API server', () => {
     expect(legacyLoadResponse.ok).toBe(true);
   });
 
-  it('returns honest placeholder import sessions for DXF routes', async () => {
+  it('creates DXF import sessions with geometry, extracted features, and draftable deterministic input', async () => {
     const instance = await startTestServer();
     servers.push(instance);
 
@@ -116,13 +168,17 @@ describe('CAM API server', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fileName: 'incoming-part.dxf',
+        content: sampleDxf,
       }),
     });
 
     expect(response.status).toBe(201);
     const importSession = await response.json();
-    expect(importSession.importStatus).toBe('not_implemented');
+    expect(importSession.importStatus).toBe('success');
     expect(importSession.source.type).toBe('dxf');
-    expect(importSession.warnings.join(' ')).toContain('not implemented yet');
+    expect(importSession.importedModel.geometryDocument.entities.length).toBeGreaterThan(0);
+    expect(importSession.importedModel.extractedFeatures.length).toBeGreaterThan(0);
+    expect(importSession.deterministicPartInput.contours.length).toBeGreaterThan(0);
+    expect(importSession.warnings.join(' ')).toContain('feature depths are assumed planning defaults');
   });
 });

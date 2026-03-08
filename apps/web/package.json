@@ -10,6 +10,7 @@
     "test": "vitest run src/workbenchReducer.test.ts src/viewportScene.test.ts"
   },
   "dependencies": {
+    "@cam/geometry2d": "file:../../packages/geometry2d",
     "@cam/model": "file:../../packages/model",
     "@cam/shared": "file:../../packages/shared",
     "@react-three/drei": "^10.7.7",

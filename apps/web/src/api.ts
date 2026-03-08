@@ -54,7 +54,18 @@ export function importJsonText(content: string, fileName = 'structured-part.json
   });
 }
 
-export function importPlaceholder(format: 'dxf' | 'step', fileName: string, content = ''): Promise<ImportSessionRecord> {
+export function importDxfText(content: string, fileName = 'incoming-model.dxf'): Promise<ImportSessionRecord> {
+  return fetchJson<ImportSessionRecord>('/imports/dxf', {
+    method: 'POST',
+    body: JSON.stringify({
+      fileName,
+      mediaType: 'application/dxf',
+      content,
+    }),
+  });
+}
+
+export function importPlaceholder(format: 'step', fileName: string, content = ''): Promise<ImportSessionRecord> {
   return fetchJson<ImportSessionRecord>(`/imports/${format}`, {
     method: 'POST',
     body: JSON.stringify({

@@ -14,7 +14,7 @@ describe('viewportScene', () => {
     const model = deriveImportedModelFromPart(source, samplePartInput);
     const plan = planPart(samplePartInput);
     const previews = buildOperationPreviewLayer(model, plan.operations);
-    const scene = buildScenePipeline(model, previews, plan.features[0]?.id ?? null, plan.operations[0]?.id ?? null);
+    const scene = buildScenePipeline(model, previews, plan.features[0]?.id ?? null, plan.operations[0]?.id ?? null, null);
 
     expect(scene.stockEntity?.kind).toBe('stock');
     expect(scene.featureLayer.entities.length).toBeGreaterThan(0);

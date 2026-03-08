@@ -12,6 +12,9 @@ export type ViewOrientation = 'isometric' | 'top' | 'front' | 'right' | 'fit';
 
 export type ScenePipeline = {
   stockEntity: ModelEntity | null;
+  importedGeometryLayer: {
+    entities: ModelEntity[];
+  };
   sourceModelLayer: {
     entities: ModelEntity[];
   };
@@ -30,7 +33,7 @@ export type ScenePipeline = {
 };
 
 export const derivedViewportDisclaimer =
-  'Derived viewport only: source/model layers, stock, feature envelopes, and operation preview overlays are arranged from import metadata and deterministic plan state. This is not a CAD kernel, STEP/DXF machining pipeline, or verified toolpath preview.';
+  'Derived viewport only: imported 2D geometry, extracted features, stock assumptions, and operation preview overlays are arranged from DXF/JSON import metadata and deterministic plan state. This is not a CAD kernel, solid model, or verified toolpath preview.';
 
 export function buildOperationPreviewLayer(model: ImportedModel | null, operations: DraftCamPlan['operations']): OperationPreview[] {
   if (!model) {
@@ -44,16 +47,24 @@ export function buildScenePipeline(
   operationPreviews: OperationPreview[],
   selectedFeatureId: string | null,
   selectedOperationId: string | null,
+  selectedGeometryId: string | null,
 ): ScenePipeline {
   const fragments = new Map(model.fragments.map((fragment) => [fragment.id, fragment]));
   const stockEntity = model.entities.find((entity) => entity.kind === 'stock') ?? null;
+  const geometryEntities = model.entities.filter((entity) => entity.kind === 'source_geometry');
   const featureEntities = model.entities.filter((entity) => entity.kind === 'feature');
-  const selectionEntity = featureEntities.find((entity) => entity.featureId === selectedFeatureId)
+  const featureLink = selectedFeatureId ? model.featureGeometryLinks.find((link) => link.featureId === selectedFeatureId) : undefined;
+  const selectionEntity = geometryEntities.find((entity) => entity.id === selectedGeometryId)
+    ?? featureEntities.find((entity) => entity.featureId === selectedFeatureId)
+    ?? (featureLink?.sourceGeometryIds[0] ? geometryEntities.find((entity) => entity.id === featureLink.sourceGeometryIds[0]) : null)
     ?? model.entities.find((entity) => entity.operationId === selectedOperationId)
     ?? null;
 
   return {
     stockEntity,
+    importedGeometryLayer: {
+      entities: geometryEntities,
+    },
     sourceModelLayer: {
       entities: model.entities.filter((entity) => entity.kind === 'source_geometry' || entity.kind === 'stock'),
     },

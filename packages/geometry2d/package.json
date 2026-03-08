@@ -1,5 +1,5 @@
 {
-  "name": "@cam/ai",
+  "name": "@cam/geometry2d",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,11 +12,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run src/index.test.ts"
   },
   "dependencies": {
-    "@cam/geometry2d": "file:../geometry2d",
-    "@cam/model": "file:../model",
-    "@cam/shared": "file:../shared"
+    "zod": "^4.3.6"
   }
 }
