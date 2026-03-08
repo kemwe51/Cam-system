@@ -7,6 +7,8 @@ build
 **/build
 .vite
 **/.vite
+**/.vite-temp
+**/node_modules/.tmp
 *.tsbuildinfo
 **/*.tsbuildinfo
 .DS_Store

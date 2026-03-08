@@ -100,7 +100,7 @@ npm run test
 
 ## Development
 
-Workspace packages resolve through their built `dist/` entries for runtime usage. The stable developer workflow is:
+Workspace packages resolve through their built `dist/` entries for runtime usage. Tests still execute the current workspace source files, while cross-workspace imports stay honest to the published package boundary by resolving through each package's `main` / `exports` entry. The stable developer workflow is:
 
 1. install dependencies once with `npm install`
 2. build workspace libraries with `npm run build:packages`
@@ -118,6 +118,12 @@ Run the web workbench:
 
 ```bash
 npm run dev:web
+```
+
+Expose the web dev server on all interfaces when needed:
+
+```bash
+npm run dev:web -- --host 0.0.0.0
 ```
 
 The web app defaults to `http://localhost:3001` for API requests.
@@ -138,6 +144,7 @@ Contributor caveat:
 - Runtime resolution stays intentionally honest: package `main` / `exports` point at built `dist/` files.
 - If you change code inside `packages/*` while `npm run dev:api` or `npm run dev:web` is already running, rebuild the libraries with `npm run build:packages` so the apps pick up the new package output.
 - Vitest continues to execute tests from source files; production builds no longer emit `*.test.*` artifacts.
+- Vite and TypeScript cache folders such as `.vite`, `.vite-temp`, and `node_modules/.tmp` are transient and ignored from version control.
 
 For production-style API deployment, set `CAM_WEB_ORIGIN` explicitly so the API only accepts the intended web origin.
 
