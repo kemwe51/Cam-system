@@ -308,19 +308,26 @@ void CamWorkbenchMainWindow::rebuildTreeViews() {
     QList<NativeWorkbenchNode> operationNodes;
     QList<NativeWorkbenchNode> toolNodes;
     for (const auto& node : currentSnapshot_->nodes) {
-      if (node.kind == QStringLiteral("project")
-          || node.kind == QStringLiteral("collection")
+      const auto isProjectRoot = node.kind == QStringLiteral("project");
+      if (isProjectRoot
           || node.kind == QStringLiteral("source")
+          || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Model tree"))
           || node.kind == QStringLiteral("model_entity")) {
         modelNodes.push_back(node);
       }
-      if (node.kind == QStringLiteral("collection") || node.kind == QStringLiteral("feature")) {
+      if (isProjectRoot
+          || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Features"))
+          || node.kind == QStringLiteral("feature")) {
         featureNodes.push_back(node);
       }
-      if (node.kind == QStringLiteral("collection") || node.kind == QStringLiteral("operation")) {
+      if (isProjectRoot
+          || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Operations"))
+          || node.kind == QStringLiteral("operation")) {
         operationNodes.push_back(node);
       }
-      if (node.kind == QStringLiteral("collection") || node.kind == QStringLiteral("tool")) {
+      if (isProjectRoot
+          || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Tools"))
+          || node.kind == QStringLiteral("tool")) {
         toolNodes.push_back(node);
       }
     }
