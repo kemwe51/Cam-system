@@ -165,6 +165,10 @@ describe('planPart', () => {
     const drillOperation = plan.operations.find((operation) => operation.kind === 'drill')!;
     const pocketOperation = plan.operations.find((operation) => operation.kind === 'pocket' && operation.name.includes('Rough'))!;
     const slotOperation = plan.operations.find((operation) => operation.kind === 'slot')!;
+    const contourToolpathCandidate = plan.toolpathCandidates.find((candidate) => candidate.operationId === contourOperation.id)!;
+    const drillToolpathCandidate = plan.toolpathCandidates.find((candidate) => candidate.operationId === drillOperation.id)!;
+    const pocketToolpathCandidate = plan.toolpathCandidates.find((candidate) => candidate.operationId === pocketOperation.id)!;
+    const slotToolpathCandidate = plan.toolpathCandidates.find((candidate) => candidate.operationId === slotOperation.id)!;
 
     expect(contourOperation.pathProfile?.pathPlans[0]?.entryStrategy).toBe('linear_ramp');
     expect(contourOperation.pathProfile?.pathPlans[0]?.segments.some((segment) => segment.motionType === 'feed_move')).toBe(true);
@@ -174,6 +178,17 @@ describe('planPart', () => {
     expect(slotOperation.pathProfile?.pathPlans[0]?.label).toContain('Slot');
     expect(slotOperation.pathProfile?.workOffset?.code).toBe('G54');
     expect(slotOperation.pathProfile?.machineCoordinateReference?.kind).toBe('work_offset_zero');
+    expect(contourOperation.toolpathCandidateIds).toContain(contourToolpathCandidate.id);
+    expect(contourToolpathCandidate.strategyKind).toBe('outside_contour');
+    expect(contourToolpathCandidate.centerlineSegments.length).toBeGreaterThan(0);
+    expect(contourToolpathCandidate.depthLayers.length).toBeGreaterThan(0);
+    expect(contourToolpathCandidate.passes.length).toBeGreaterThan(0);
+    expect(contourToolpathCandidate.primitives.some((primitive) => primitive.kind === 'contour_pass')).toBe(true);
+    expect(drillToolpathCandidate.strategyKind).toBe('drill_hole_group');
+    expect(drillToolpathCandidate.primitives.some((primitive) => primitive.kind === 'drill_cycle')).toBe(true);
+    expect(pocketToolpathCandidate.primitives.some((primitive) => primitive.kind === 'pocket_pass')).toBe(true);
+    expect(slotToolpathCandidate.primitives.some((primitive) => primitive.kind === 'slot_pass')).toBe(true);
+    expect(slotToolpathCandidate.warnings.some((warning) => warning.code === 'toolpath_centerline_only')).toBe(true);
   });
 
   it('marks approved plans with reviewer information', () => {

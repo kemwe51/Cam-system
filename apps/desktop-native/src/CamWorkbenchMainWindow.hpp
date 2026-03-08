@@ -56,6 +56,7 @@ private:
   void syncUiToDocument();
   void rebuildTreeViews();
   void refreshInspectorForSelection(const QString& nodeId, const QString& sourcePanel);
+  void refreshInspectorForStepSelection(QTreeWidgetItem* item, const QString& sourcePanel);
   void refreshReviewPanels();
   void refreshMetadataPanel();
   void refreshViewportSummary();
@@ -85,6 +86,7 @@ private:
   QTreeWidget* featuresTree_ = nullptr;
   QTreeWidget* operationsTree_ = nullptr;
   QTreeWidget* toolsTree_ = nullptr;
+  QTreeWidget* toolpathsTree_ = nullptr;
   QTableWidget* inspectorTable_ = nullptr;
   QTextEdit* warningsView_ = nullptr;
   QTextEdit* checklistView_ = nullptr;

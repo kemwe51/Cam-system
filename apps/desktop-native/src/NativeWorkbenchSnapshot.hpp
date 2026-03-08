@@ -40,6 +40,7 @@ struct NativeWorkbenchSelectionLink {
   QString featureNodeId;
   QString operationNodeId;
   QString toolNodeId;
+  QString toolpathNodeId;
   QString previewNodeId;
   QStringList sourceGeometryIds;
   QList<NativeWorkbenchTopologyRef> topologyRefs;
@@ -53,6 +54,7 @@ struct NativeWorkbenchLinkMapping {
   QString featureId;
   QString operationId;
   QString toolId;
+  QString toolpathCandidateId;
   QString previewId;
   QStringList sourceGeometryIds;
   QList<NativeWorkbenchTopologyRef> topologyRefs;
@@ -73,6 +75,7 @@ struct NativeWorkbenchSnapshotMetadata {
   int extractedFeatureCount = 0;
   int operationCount = 0;
   int toolCount = 0;
+  int toolpathCandidateCount = 0;
   int previewCount = 0;
   int resolvedLinkCount = 0;
   int partialLinkCount = 0;

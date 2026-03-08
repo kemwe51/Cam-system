@@ -24,14 +24,23 @@
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <algorithm>
 #include <exception>
 
 namespace {
 constexpr auto kRecentFilesKey = "desktopNative/recentFiles";
 constexpr auto kNodeIdRole = Qt::UserRole + 1;
 constexpr auto kNodeKindRole = Qt::UserRole + 2;
+constexpr auto kStepPersistentIdRole = Qt::UserRole + 3;
+constexpr auto kStepEntityTypeRole = Qt::UserRole + 4;
+constexpr auto kStepSelectionIdRole = Qt::UserRole + 5;
 
 QString detailForNode(const NativeWorkbenchNode& node) {
+  if (node.kind == QStringLiteral("toolpath_candidate")) {
+    return QStringLiteral("%1 layer(s) · %2 pass(es)")
+      .arg(node.metadata.value(QStringLiteral("depthLayerCount")))
+      .arg(node.metadata.value(QStringLiteral("passCount")));
+  }
   if (!node.operationId.isEmpty()) {
     return node.metadata.value(QStringLiteral("setupId"));
   }
@@ -204,10 +213,14 @@ void CamWorkbenchMainWindow::setupDocks() {
   toolsTree_ = new QTreeWidget(leftTabs);
   toolsTree_->setHeaderLabels({QStringLiteral("Tools"), QStringLiteral("Diameter / type")});
   toolsTree_->setSelectionMode(QAbstractItemView::SingleSelection);
+  toolpathsTree_ = new QTreeWidget(leftTabs);
+  toolpathsTree_->setHeaderLabels({QStringLiteral("Toolpaths"), QStringLiteral("Layers / passes")});
+  toolpathsTree_->setSelectionMode(QAbstractItemView::SingleSelection);
   leftTabs->addTab(modelTree_, QStringLiteral("Model tree"));
   leftTabs->addTab(featuresTree_, QStringLiteral("Features"));
   leftTabs->addTab(operationsTree_, QStringLiteral("Operations"));
   leftTabs->addTab(toolsTree_, QStringLiteral("Tools"));
+  leftTabs->addTab(toolpathsTree_, QStringLiteral("Toolpaths"));
 
   auto* leftDock = new QDockWidget(QStringLiteral("Programming browser"), this);
   leftDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
@@ -251,6 +264,7 @@ void CamWorkbenchMainWindow::setupDocks() {
   connect(featuresTree_, &QTreeWidget::itemSelectionChanged, this, [this]() { handleTreeSelectionChanged(featuresTree_, QStringLiteral("Features")); });
   connect(operationsTree_, &QTreeWidget::itemSelectionChanged, this, [this]() { handleTreeSelectionChanged(operationsTree_, QStringLiteral("Operations")); });
   connect(toolsTree_, &QTreeWidget::itemSelectionChanged, this, [this]() { handleTreeSelectionChanged(toolsTree_, QStringLiteral("Tools")); });
+  connect(toolpathsTree_, &QTreeWidget::itemSelectionChanged, this, [this]() { handleTreeSelectionChanged(toolpathsTree_, QStringLiteral("Toolpaths")); });
 }
 
 void CamWorkbenchMainWindow::loadRecentFiles() {
@@ -301,13 +315,15 @@ void CamWorkbenchMainWindow::rebuildTreeViews() {
   featuresTree_->clear();
   operationsTree_->clear();
   toolsTree_->clear();
+  toolpathsTree_->clear();
 
   if (currentSnapshot_.has_value()) {
     QList<NativeWorkbenchNode> modelNodes;
     QList<NativeWorkbenchNode> featureNodes;
-    QList<NativeWorkbenchNode> operationNodes;
-    QList<NativeWorkbenchNode> toolNodes;
-    for (const auto& node : currentSnapshot_->nodes) {
+      QList<NativeWorkbenchNode> operationNodes;
+      QList<NativeWorkbenchNode> toolNodes;
+      QList<NativeWorkbenchNode> toolpathNodes;
+      for (const auto& node : currentSnapshot_->nodes) {
       const auto isProjectRoot = node.kind == QStringLiteral("project");
       if (isProjectRoot
           || node.kind == QStringLiteral("source")
@@ -325,19 +341,25 @@ void CamWorkbenchMainWindow::rebuildTreeViews() {
           || node.kind == QStringLiteral("operation")) {
         operationNodes.push_back(node);
       }
-      if (isProjectRoot
-          || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Tools"))
-          || node.kind == QStringLiteral("tool")) {
-        toolNodes.push_back(node);
+        if (isProjectRoot
+            || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Tools"))
+            || node.kind == QStringLiteral("tool")) {
+          toolNodes.push_back(node);
+        }
+        if (isProjectRoot
+            || (node.kind == QStringLiteral("collection") && node.label == QStringLiteral("Toolpath candidates"))
+            || node.kind == QStringLiteral("toolpath_candidate")) {
+          toolpathNodes.push_back(node);
+        }
       }
-    }
 
     addSnapshotNodesToTree(modelTree_, modelNodes, 0, 1);
     populateStepTree();
-    addSnapshotNodesToTree(featuresTree_, featureNodes, 0, 1);
-    addSnapshotNodesToTree(operationsTree_, operationNodes, 0, 1);
-    addSnapshotNodesToTree(toolsTree_, toolNodes, 0, 1);
-  } else {
+      addSnapshotNodesToTree(featuresTree_, featureNodes, 0, 1);
+      addSnapshotNodesToTree(operationsTree_, operationNodes, 0, 1);
+      addSnapshotNodesToTree(toolsTree_, toolNodes, 0, 1);
+      addSnapshotNodesToTree(toolpathsTree_, toolpathNodes, 0, 1);
+    } else {
     auto* projectRoot = new QTreeWidgetItem(modelTree_, {currentProject_.title(), currentProject_.projectId});
     projectRoot->addChild(new QTreeWidgetItem({QStringLiteral("Bridge snapshot"), QFileInfo(currentProject_.bridgeSnapshotPath).fileName()}));
     projectRoot->addChild(new QTreeWidgetItem({QStringLiteral("STEP source"), QFileInfo(currentProject_.lastImportedStepPath).fileName()}));
@@ -349,6 +371,7 @@ void CamWorkbenchMainWindow::rebuildTreeViews() {
   featuresTree_->expandAll();
   operationsTree_->expandAll();
   toolsTree_->expandAll();
+  toolpathsTree_->expandAll();
 }
 
 void CamWorkbenchMainWindow::addSnapshotNodesToTree(QTreeWidget* tree, const QList<NativeWorkbenchNode>& nodes, int labelColumn, int detailColumn) {
@@ -395,9 +418,10 @@ void CamWorkbenchMainWindow::populateStepTree() {
   stepRoot->addChild(new QTreeWidgetItem({QStringLiteral("Source path"), currentProject_.lastImportedStepPath}));
   stepRoot->addChild(new QTreeWidgetItem({QStringLiteral("OCCT"), currentStepLoad_.occtAvailable ? QStringLiteral("available") : QStringLiteral("missing")}));
   stepRoot->addChild(new QTreeWidgetItem({QStringLiteral("XDE document"), currentStepLoad_.xdeDocumentLoaded ? QStringLiteral("loaded") : QStringLiteral("not loaded")}));
+  stepRoot->addChild(new QTreeWidgetItem({QStringLiteral("Topology selection"), currentStepLoad_.topologySelectionReady ? QStringLiteral("ready") : QStringLiteral("pending")}));
 
   if (!currentStepLoad_.nodes.isEmpty()) {
-    auto* documentRoot = new QTreeWidgetItem(stepRoot, {QStringLiteral("STEP/XDE model tree"), QStringLiteral("%1 root shapes").arg(currentStepLoad_.freeShapeCount)});
+    auto* documentRoot = new QTreeWidgetItem(stepRoot, {QStringLiteral("STEP/XDE model tree"), QStringLiteral("%1 root shapes · %2 topology nodes").arg(currentStepLoad_.freeShapeCount).arg(currentStepLoad_.topologyNodeCount)});
     QHash<QString, QTreeWidgetItem*> stepItems;
     for (const auto& node : currentStepLoad_.nodes) {
       QTreeWidgetItem* parent = documentRoot;
@@ -405,7 +429,10 @@ void CamWorkbenchMainWindow::populateStepTree() {
         parent = stepItems.value(node.parentId);
       }
       auto* item = new QTreeWidgetItem(parent, {node.label, QStringLiteral("%1 · %2").arg(node.entityType, node.persistentId)});
-      item->setToolTip(0, QStringLiteral("OCCT persistent id: %1").arg(node.persistentId));
+      item->setData(0, kStepPersistentIdRole, node.persistentId);
+      item->setData(0, kStepEntityTypeRole, node.entityType);
+      item->setData(0, kStepSelectionIdRole, node.selectionId);
+      item->setToolTip(0, QStringLiteral("OCCT persistent id: %1\nSelection filter: %2").arg(node.persistentId, node.selectionFilter));
       stepItems.insert(node.id, item);
     }
   } else {
@@ -444,6 +471,11 @@ void CamWorkbenchMainWindow::refreshInspectorForSelection(const QString& nodeId,
       if (!node->toolId.isEmpty()) {
         rows.push_back({QStringLiteral("Tool id"), node->toolId});
       }
+      if (node->kind == QStringLiteral("toolpath_candidate")) {
+        rows.push_back({QStringLiteral("Toolpath stage"), node->metadata.value(QStringLiteral("stage"))});
+        rows.push_back({QStringLiteral("Depth layers"), node->metadata.value(QStringLiteral("depthLayerCount"))});
+        rows.push_back({QStringLiteral("Passes"), node->metadata.value(QStringLiteral("passCount"))});
+      }
       if (!node->previewId.isEmpty()) {
         rows.push_back({QStringLiteral("Preview id"), node->previewId});
       }
@@ -453,6 +485,16 @@ void CamWorkbenchMainWindow::refreshInspectorForSelection(const QString& nodeId,
       if (const auto* link = currentSnapshot_->findSelectionLinkForNode(nodeId)) {
         rows.push_back({QStringLiteral("Link resolution"), link->resolution});
         rows.push_back({QStringLiteral("Link warnings"), link->warnings.join(QStringLiteral(" | "))});
+        if (!link->toolpathNodeId.isEmpty()) {
+          rows.push_back({QStringLiteral("Toolpath node"), link->toolpathNodeId});
+        }
+        if (!link->topologyRefs.isEmpty()) {
+          QStringList topologyRows;
+          for (const auto& ref : link->topologyRefs) {
+            topologyRows.push_back(QStringLiteral("%1:%2").arg(ref.entityType, ref.persistentId));
+          }
+          rows.push_back({QStringLiteral("Topology refs"), topologyRows.join(QStringLiteral(" | "))});
+        }
       }
       for (auto iterator = node->metadata.begin(); iterator != node->metadata.end(); ++iterator) {
         rows.push_back({QStringLiteral("Meta · %1").arg(iterator.key()), iterator.value()});
@@ -463,6 +505,67 @@ void CamWorkbenchMainWindow::refreshInspectorForSelection(const QString& nodeId,
     rows.push_back({QStringLiteral("STEP status"), currentStepLoad_.statusMessage});
   }
 
+  inspectorTable_->setRowCount(rows.size());
+  for (int row = 0; row < rows.size(); ++row) {
+    inspectorTable_->setItem(row, 0, new QTableWidgetItem(rows[row].first));
+    inspectorTable_->setItem(row, 1, new QTableWidgetItem(rows[row].second));
+  }
+}
+
+void CamWorkbenchMainWindow::refreshInspectorForStepSelection(QTreeWidgetItem* item, const QString& sourcePanel) {
+  if (item == nullptr) {
+    refreshInspectorForSelection({}, sourcePanel);
+    return;
+  }
+
+  const auto persistentId = item->data(0, kStepPersistentIdRole).toString();
+  const auto entityType = item->data(0, kStepEntityTypeRole).toString();
+  const auto selectionId = item->data(0, kStepSelectionIdRole).toString();
+
+  QList<QPair<QString, QString>> rows = {
+    {QStringLiteral("Project"), currentProject_.title()},
+    {QStringLiteral("Source panel"), sourcePanel},
+    {QStringLiteral("Selection kind"), QStringLiteral("STEP topology")},
+    {QStringLiteral("Entity type"), entityType},
+    {QStringLiteral("Persistent id"), persistentId},
+    {QStringLiteral("Selection id"), selectionId},
+    {QStringLiteral("STEP source"), currentProject_.lastImportedStepPath},
+  };
+
+  bool mapped = false;
+  if (currentSnapshot_.has_value()) {
+    for (const auto& link : currentSnapshot_->selectionLinks) {
+      const auto matchingRef = std::find_if(link.topologyRefs.begin(), link.topologyRefs.end(), [&persistentId](const auto& ref) {
+        return ref.persistentId == persistentId;
+      });
+      if (matchingRef != link.topologyRefs.end()) {
+        mapped = true;
+        rows.push_back({QStringLiteral("Link id"), link.id});
+        rows.push_back({QStringLiteral("Link resolution"), link.resolution});
+        rows.push_back({QStringLiteral("Link warnings"), link.warnings.join(QStringLiteral(" | "))});
+        if (!link.modelEntityNodeId.isEmpty()) {
+          rows.push_back({QStringLiteral("Mapped model node"), link.modelEntityNodeId});
+        }
+        if (!link.featureNodeId.isEmpty()) {
+          rows.push_back({QStringLiteral("Mapped feature node"), link.featureNodeId});
+        }
+        if (!link.operationNodeId.isEmpty()) {
+          rows.push_back({QStringLiteral("Mapped operation node"), link.operationNodeId});
+        }
+        if (!link.toolpathNodeId.isEmpty()) {
+          rows.push_back({QStringLiteral("Mapped toolpath node"), link.toolpathNodeId});
+        }
+        break;
+      }
+    }
+  }
+
+  if (!mapped) {
+    rows.push_back({QStringLiteral("Link status"), QStringLiteral("Unresolved")});
+    rows.push_back({QStringLiteral("Warning"), QStringLiteral("This STEP selection is topology-backed locally, but it is not mapped to a CAM feature/operation/toolpath bridge item yet.")});
+  }
+
+  inspectorTable_->clearContents();
   inspectorTable_->setRowCount(rows.size());
   for (int row = 0; row < rows.size(); ++row) {
     inspectorTable_->setItem(row, 0, new QTableWidgetItem(rows[row].first));
@@ -481,6 +584,7 @@ void CamWorkbenchMainWindow::refreshReviewPanels() {
     QStringLiteral("- Open or save a `.camproj.json` desktop project"),
     QStringLiteral("- Attach a `native-workbench-v1` snapshot from the TypeScript/API companion flow"),
     QStringLiteral("- Import a STEP file to exercise the OCCT/XDE loading boundary"),
+    QStringLiteral("- Review toolpath candidates before treating them as anything beyond deterministic centerline candidates"),
     QStringLiteral("- Review unresolved STEP-to-feature links before trusting topology-aware CAM edits"),
     QStringLiteral("- Use hide/show/isolate hooks to prepare future display-object lifecycle management"),
   };
@@ -503,12 +607,13 @@ void CamWorkbenchMainWindow::refreshMetadataPanel() {
     QStringLiteral("schemaVersion: %1").arg(currentProject_.schemaVersion),
     QStringLiteral("projectFile: %1").arg(currentProject_.projectFilePath),
     QStringLiteral("bridgeSnapshotPath: %1").arg(currentProject_.bridgeSnapshotPath),
-    QStringLiteral("stepSource: %1").arg(currentProject_.lastImportedStepPath),
-    QStringLiteral("dxfSource: %1").arg(currentProject_.lastImportedDxfPath),
-    QStringLiteral("dirty: %1").arg(currentProject_.dirty ? QStringLiteral("yes") : QStringLiteral("no")),
-    QStringLiteral("stepSession: %1").arg(currentStepLoad_.status),
-    QStringLiteral("stepStatus: %1").arg(currentStepLoad_.statusMessage),
-  };
+      QStringLiteral("stepSource: %1").arg(currentProject_.lastImportedStepPath),
+      QStringLiteral("dxfSource: %1").arg(currentProject_.lastImportedDxfPath),
+      QStringLiteral("dirty: %1").arg(currentProject_.dirty ? QStringLiteral("yes") : QStringLiteral("no")),
+      QStringLiteral("stepSession: %1").arg(currentStepLoad_.status),
+      QStringLiteral("stepStatus: %1").arg(currentStepLoad_.statusMessage),
+      QStringLiteral("stepTopologyNodes: %1").arg(currentStepLoad_.topologyNodeCount),
+    };
   if (currentSnapshot_.has_value()) {
     lines.push_back(QStringLiteral("nativeWorkbench: %1").arg(currentSnapshot_->summaryLine()));
     lines.push_back(QStringLiteral("displayLayers: %1").arg(currentSnapshot_->displayLayers.size()));
@@ -521,7 +626,7 @@ void CamWorkbenchMainWindow::refreshViewportSummary() {
   viewport_->setIntegrationStatus(currentStepLoad_.statusMessage);
   viewport_->setDocumentStatus(currentSnapshot_.has_value()
       ? QStringLiteral("Bridge snapshot loaded · %1").arg(currentSnapshot_->summaryLine())
-      : QStringLiteral("Awaiting bridge snapshot. STEP session status: %1").arg(currentStepLoad_.status));
+      : QStringLiteral("Awaiting bridge snapshot. STEP session status: %1 · topology nodes %2").arg(currentStepLoad_.status).arg(currentStepLoad_.topologyNodeCount));
 
   QStringList layerLabels;
   if (currentSnapshot_.has_value()) {
@@ -542,8 +647,27 @@ void CamWorkbenchMainWindow::refreshViewportSummary() {
 }
 
 void CamWorkbenchMainWindow::handleTreeSelectionChanged(QTreeWidget* tree, const QString& sourcePanel) {
+  auto* currentItem = tree != nullptr ? tree->currentItem() : nullptr;
   const auto nodeId = selectedNodeId(tree);
   if (nodeId.isEmpty()) {
+    if (currentItem != nullptr && !currentItem->data(0, kStepPersistentIdRole).toString().isEmpty()) {
+      clearTreeSelections(tree);
+      refreshInspectorForStepSelection(currentItem, sourcePanel);
+      viewport_->setSelectionStatus(QStringLiteral("%1 selection → STEP %2").arg(sourcePanel, currentItem->data(0, kStepPersistentIdRole).toString()));
+      if (currentSnapshot_.has_value()) {
+        const auto persistentId = currentItem->data(0, kStepPersistentIdRole).toString();
+        const auto matchingLink = std::find_if(currentSnapshot_->selectionLinks.begin(), currentSnapshot_->selectionLinks.end(), [&persistentId](const auto& link) {
+          return std::any_of(link.topologyRefs.begin(), link.topologyRefs.end(), [&persistentId](const auto& ref) {
+            return ref.persistentId == persistentId;
+          });
+        });
+        if (matchingLink != currentSnapshot_->selectionLinks.end()) {
+          applySelectionLink(*matchingLink, tree);
+        } else {
+          statusBar()->showMessage(QStringLiteral("STEP topology selection is not linked to a feature/operation/toolpath yet."), 7000);
+        }
+      }
+    }
     return;
   }
 
@@ -571,6 +695,7 @@ void CamWorkbenchMainWindow::applySelectionLink(const NativeWorkbenchSelectionLi
   applyNode(featuresTree_, link.featureNodeId);
   applyNode(operationsTree_, link.operationNodeId);
   applyNode(toolsTree_, link.toolNodeId);
+  applyNode(toolpathsTree_, link.toolpathNodeId);
 
   if (!link.warnings.isEmpty()) {
     statusBar()->showMessage(link.warnings.join(QStringLiteral(" | ")), 7000);
@@ -580,6 +705,7 @@ void CamWorkbenchMainWindow::applySelectionLink(const NativeWorkbenchSelectionLi
     refreshInspectorForSelection(selectedNodeId(sourceTree), sourceTree == modelTree_ ? QStringLiteral("Model tree")
       : sourceTree == featuresTree_ ? QStringLiteral("Features")
       : sourceTree == operationsTree_ ? QStringLiteral("Operations")
+      : sourceTree == toolpathsTree_ ? QStringLiteral("Toolpaths")
       : QStringLiteral("Tools"));
   }
 }
@@ -595,6 +721,7 @@ void CamWorkbenchMainWindow::clearTreeSelections(QTreeWidget* sourceTree) {
   clearIfNeeded(featuresTree_);
   clearIfNeeded(operationsTree_);
   clearIfNeeded(toolsTree_);
+  clearIfNeeded(toolpathsTree_);
 }
 
 void CamWorkbenchMainWindow::applyVisibilityCommand(CommandId commandId) {
@@ -619,6 +746,7 @@ void CamWorkbenchMainWindow::applyVisibilityCommand(CommandId commandId) {
     if (currentSnapshot_.has_value()) {
       if (const auto* link = currentSnapshot_->findSelectionLinkForNode(nodeId)) {
         keepIds << link->modelEntityNodeId << link->featureNodeId << link->operationNodeId << link->toolNodeId << link->previewNodeId;
+        keepIds << link->toolpathNodeId;
       }
       for (const auto& node : currentSnapshot_->nodes) {
         if (!keepIds.contains(node.id)) {
@@ -672,12 +800,12 @@ void CamWorkbenchMainWindow::loadStepFile(const QString& filePath) {
 }
 
 QTreeWidget* CamWorkbenchMainWindow::activeTree() const {
-  for (auto* tree : {modelTree_, featuresTree_, operationsTree_, toolsTree_}) {
+  for (auto* tree : {modelTree_, featuresTree_, operationsTree_, toolsTree_, toolpathsTree_}) {
     if (tree != nullptr && tree->hasFocus()) {
       return tree;
     }
   }
-  for (auto* tree : {modelTree_, featuresTree_, operationsTree_, toolsTree_}) {
+  for (auto* tree : {modelTree_, featuresTree_, operationsTree_, toolsTree_, toolpathsTree_}) {
     if (tree != nullptr && !selectedNodeId(tree).isEmpty()) {
       return tree;
     }
