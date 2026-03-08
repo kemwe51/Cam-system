@@ -1,4 +1,4 @@
-import { camReviewSchema, type CamReview, type DraftCamPlan } from '@cam/shared';
+import { camReviewSchema, type CamReview, type DraftCamPlan, type Operation } from '@cam/shared';
 
 type ReviewOptions = {
   apiKey?: string;
@@ -6,9 +6,33 @@ type ReviewOptions = {
   model?: string;
 };
 
-function reviewContext(plan: DraftCamPlan) {
+type ReviewContext = {
+  plan: DraftCamPlan;
+  currentDraftState: {
+    approvalState: DraftCamPlan['approval']['state'];
+    estimatedCycleTimeMinutes: number;
+    manualOperationCount: number;
+    disabledOperationCount: number;
+    modifiedOperationCount: number;
+  };
+  manualOverrides: Array<{
+    id: string;
+    name: string;
+    featureId: string;
+    origin: Operation['origin'];
+    enabled: boolean;
+    setup: string;
+    strategy: string;
+    notes: string;
+    estimatedMinutes: number;
+    toolName: string;
+    isDirty: boolean;
+  }>;
+};
+
+function reviewContext(plan: DraftCamPlan): ReviewContext {
   const manualOverrides = plan.operations
-    .filter((operation) => operation.origin === 'manual' || !operation.enabled)
+    .filter((operation) => operation.origin === 'manual' || !operation.enabled || operation.isDirty)
     .map((operation) => ({
       id: operation.id,
       name: operation.name,
@@ -17,17 +41,22 @@ function reviewContext(plan: DraftCamPlan) {
       enabled: operation.enabled,
       setup: operation.setup,
       strategy: operation.strategy,
+      notes: operation.notes,
       estimatedMinutes: operation.estimatedMinutes,
       toolName: operation.toolName,
+      isDirty: operation.isDirty,
     }));
 
   return {
     plan,
-    draftSummary: {
+    currentDraftState: {
+      approvalState: plan.approval.state,
+      estimatedCycleTimeMinutes: plan.estimatedCycleTimeMinutes,
       manualOperationCount: plan.operations.filter((operation) => operation.origin === 'manual').length,
       disabledOperationCount: plan.operations.filter((operation) => !operation.enabled).length,
-      manualOverrides,
+      modifiedOperationCount: plan.operations.filter((operation) => operation.isDirty).length,
     },
+    manualOverrides,
   };
 }
 
@@ -41,7 +70,7 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
   }
 
   if (plan.features.some((feature) => feature.kind === 'pocket' && feature.depthMm >= 12)) {
-    suggestedEdits.push('Review pocket step-down and holder clearance for the deep pocket before release.');
+    suggestedEdits.push('Review pocket step-down, holder clearance, and remaining machining for the deep pocket before release.');
   }
 
   if (plan.features.every((feature) => feature.kind !== 'top_surface')) {
@@ -56,6 +85,10 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
     suggestedEdits.push('Disabled operations should be reviewed to confirm the feature still has complete machining coverage.');
   }
 
+  if (plan.operations.some((operation) => operation.isDirty)) {
+    suggestedEdits.push('Modified operations are unsaved draft overrides and should be re-reviewed before approval.');
+  }
+
   return camReviewSchema.parse({
     mode: 'stub',
     missingOperations,
@@ -63,8 +96,10 @@ function heuristicReview(plan: DraftCamPlan): CamReview {
     suggestedEdits,
     overallAssessment:
       riskFlags.length > 0
-        ? 'Draft plan is plausible, but the highlighted risks should be reviewed by an NC programmer before approval.'
-        : 'Draft plan looks consistent with the structured part input. Human approval is still required.',
+        ? 'Draft plan is plausible, but the highlighted risks and manual overrides should be reviewed by an NC programmer before approval.'
+        : 'Draft plan looks consistent with the structured part input. Human approval is still required before release.',
+    approvalRecommendation: riskFlags.length > 0 || plan.operations.some((operation) => operation.isDirty) ? 'hold' : 'review',
+    fallbackUsed: true,
   });
 }
 
@@ -108,10 +143,7 @@ function extractOutputText(payload: unknown): string | undefined {
   return undefined;
 }
 
-export async function reviewDraftPlan(
-  plan: DraftCamPlan,
-  options: ReviewOptions = {},
-): Promise<CamReview> {
+export async function reviewDraftPlan(plan: DraftCamPlan, options: ReviewOptions = {}): Promise<CamReview> {
   const fallback = heuristicReview(plan);
   const apiKey = options.apiKey?.trim();
 
@@ -124,10 +156,19 @@ export async function reviewDraftPlan(
   const prompt = [
     'You are an advisory CAM reviewer. The deterministic plan remains the source of manufacturing authority.',
     'Review the provided deterministic draft plan for 2D and 2.5D milling only.',
-    'Return strict JSON with keys: mode, missingOperations, riskFlags, suggestedEdits, overallAssessment.',
+    'Return strict JSON matching this TypeScript shape:',
+    JSON.stringify({
+      mode: 'openai',
+      missingOperations: ['string'],
+      riskFlags: ['string'],
+      suggestedEdits: ['string'],
+      overallAssessment: 'string',
+      approvalRecommendation: 'hold | review | approve_with_human_signoff',
+      fallbackUsed: false,
+    }),
     'Do not invent geometry, do not output G-code, and do not override deterministic facts.',
     'Manual operations, disabled operations, and user-edited strategy text are draft overrides that must be reviewed but never treated as authoritative geometry.',
-    'The payload below is structured JSON prepared for the OpenAI Responses API and includes manual override context.',
+    'The payload below includes current draft state and manual overrides.',
     JSON.stringify(reviewContext(plan)),
   ].join('\n\n');
 
@@ -162,6 +203,7 @@ export async function reviewDraftPlan(
     return {
       ...parsed.data,
       mode: 'openai',
+      fallbackUsed: false,
     };
   } catch {
     return fallback;

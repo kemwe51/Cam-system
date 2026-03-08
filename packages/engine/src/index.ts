@@ -1,89 +1,24 @@
 import {
   approvalRequestSchema,
+  buildOperationGroupId,
+  buildOperationGroups,
+  defaultMachineProfile,
+  defaultSetups,
+  defaultToolLibrary,
   draftCamPlanSchema,
+  getSetupLabel,
   partInputSchema,
   samplePartInput,
   type ApprovalRequest,
   type DraftCamPlan,
   type NormalizedFeature,
+  type Operation,
+  type OperationKind,
   type PartInput,
   type Risk,
   type RiskLevel,
   type Tool,
 } from '@cam/shared';
-
-const faceMillTool: Tool = {
-  id: 'tool-face-16',
-  name: '16 mm face mill',
-  type: 'face_mill',
-  diameterMm: 16,
-  maxDepthMm: 2,
-  material: 'carbide',
-};
-
-const flatEndMill10Tool: Tool = {
-  id: 'tool-flat-10',
-  name: '10 mm flat end mill',
-  type: 'flat_end_mill',
-  diameterMm: 10,
-  maxDepthMm: 18,
-  material: 'carbide',
-};
-
-const flatEndMill6Tool: Tool = {
-  id: 'tool-flat-6',
-  name: '6 mm flat end mill',
-  type: 'flat_end_mill',
-  diameterMm: 6,
-  maxDepthMm: 20,
-  material: 'carbide',
-};
-
-const drill6Tool: Tool = {
-  id: 'tool-drill-6',
-  name: '6 mm carbide drill',
-  type: 'drill',
-  diameterMm: 6,
-  maxDepthMm: 24,
-  material: 'carbide',
-};
-
-const drill3Tool: Tool = {
-  id: 'tool-drill-3',
-  name: '3 mm carbide drill',
-  type: 'drill',
-  diameterMm: 3,
-  maxDepthMm: 12,
-  material: 'carbide',
-};
-
-const chamferTool: Tool = {
-  id: 'tool-chamfer-12',
-  name: '12 mm chamfer mill',
-  type: 'chamfer_mill',
-  diameterMm: 12,
-  maxDepthMm: 3,
-  material: 'carbide',
-};
-
-const engraverTool: Tool = {
-  id: 'tool-engrave-02',
-  name: '0.2 mm engraving tool',
-  type: 'engraver',
-  diameterMm: 0.2,
-  maxDepthMm: 1,
-  material: 'carbide',
-};
-
-const toolLibrary: Tool[] = [
-  faceMillTool,
-  flatEndMill10Tool,
-  flatEndMill6Tool,
-  drill6Tool,
-  drill3Tool,
-  chamferTool,
-  engraverTool,
-];
 
 const featureKindOrder = [
   'top_surface',
@@ -97,6 +32,7 @@ const featureKindOrder = [
 
 const narrowMillingWidthThresholdMm = 8;
 const narrowSlotWidthThresholdMm = 6;
+const defaultSetupId = defaultSetups[0]?.id ?? 'setup-1';
 
 function highestRisk(risks: Risk[]): RiskLevel {
   if (risks.some((risk) => risk.level === 'high')) {
@@ -158,7 +94,7 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       lengthMm: pocket.lengthMm,
       widthMm: pocket.widthMm,
       areaMm2: pocket.lengthMm * pocket.widthMm,
-      notes: ['Pocket kept rectangular in v1; no freeform geometry is assumed.'],
+      notes: ['Pocket kept rectangular in v2; no freeform geometry is assumed.'],
     });
   });
 
@@ -223,28 +159,36 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
   });
 
   return features.sort(
-    (left, right) =>
-      featureKindOrder.indexOf(left.kind) - featureKindOrder.indexOf(right.kind),
+    (left, right) => featureKindOrder.indexOf(left.kind) - featureKindOrder.indexOf(right.kind),
   );
+}
+
+function requireTool(toolId: string): Tool {
+  const tool = defaultToolLibrary.tools.find((candidate) => candidate.id === toolId);
+  if (!tool) {
+    throw new Error(`Required tool ${toolId} is missing from the default tool library.`);
+  }
+
+  return tool;
 }
 
 function selectTool(feature: NormalizedFeature): Tool {
   switch (feature.kind) {
     case 'top_surface':
-      return faceMillTool;
+      return requireTool('tool-face-16');
     case 'contour':
     case 'pocket':
       return feature.widthMm > 0 && feature.widthMm <= narrowMillingWidthThresholdMm
-        ? flatEndMill6Tool
-        : flatEndMill10Tool;
+        ? requireTool('tool-flat-6')
+        : requireTool('tool-flat-10');
     case 'slot':
-      return feature.widthMm <= narrowSlotWidthThresholdMm ? flatEndMill6Tool : flatEndMill10Tool;
+      return feature.widthMm <= narrowSlotWidthThresholdMm ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
     case 'hole_group':
-      return feature.lengthMm <= 3.5 ? drill3Tool : drill6Tool;
+      return feature.lengthMm <= 3.5 ? requireTool('tool-drill-3') : requireTool('tool-drill-6');
     case 'chamfer':
-      return chamferTool;
+      return requireTool('tool-chamfer-12');
     case 'engraving':
-      return engraverTool;
+      return requireTool('tool-engrave-02');
   }
 }
 
@@ -308,153 +252,143 @@ function featureRisks(feature: NormalizedFeature, part: PartInput): Risk[] {
   return risks;
 }
 
+function createOperation(
+  id: string,
+  name: string,
+  kind: OperationKind,
+  feature: NormalizedFeature,
+  tool: Tool,
+  estimatedMinutes: number,
+  strategy: string,
+): Operation {
+  const setup = getSetupLabel(defaultSetups, defaultSetupId);
+  return {
+    id,
+    name,
+    kind,
+    featureId: feature.id,
+    toolId: tool.id,
+    toolName: tool.name,
+    setupId: defaultSetupId,
+    setup,
+    groupId: buildOperationGroupId(defaultSetupId, feature.id),
+    strategy,
+    notes: '',
+    estimatedMinutes,
+    enabled: true,
+    origin: 'automatic',
+    order: 0,
+    isDirty: false,
+  };
+}
+
 export function planPart(input: PartInput): DraftCamPlan {
   const part = partInputSchema.parse(input);
   const features = normalizePart(part);
-  const toolsById = new Map<string, Tool>();
+  const toolIds = new Set<string>();
   const risks: Risk[] = [];
 
   const operations = features
     .flatMap((feature, index) => {
-    const tool = selectTool(feature);
-    toolsById.set(tool.id, tool);
-    risks.push(...featureRisks(feature, part));
+      const tool = selectTool(feature);
+      toolIds.add(tool.id);
+      risks.push(...featureRisks(feature, part));
 
-    switch (feature.kind) {
-      case 'top_surface':
-        return [
-          {
-            id: `op-${index + 1}-face`,
-            name: `Face ${feature.name}`,
-            kind: 'face',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Face stock to establish Z datum.',
-            estimatedMinutes: operationMinutes(feature.areaMm2 / 1800),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-      case 'contour':
-        return [
-          {
-            id: `op-${index + 1}-profile`,
-            name: `Profile ${feature.name}`,
-            kind: 'profile',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: '2D contour with leave-on-finish stock for final wall cleanup.',
-            estimatedMinutes: operationMinutes(feature.lengthMm / 110),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-      case 'pocket':
-        return [
-          {
-            id: `op-${index + 1}-pocket-rough`,
-            name: `Rough pocket ${feature.name}`,
-            kind: 'pocket',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Adaptive roughing with conservative step-down.',
-            estimatedMinutes: operationMinutes((feature.areaMm2 * Math.max(feature.depthMm, 1)) / 9000),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-          {
-            id: `op-${index + 1}-pocket-finish`,
-            name: `Finish pocket ${feature.name}`,
-            kind: 'pocket',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Finish floor and walls after roughing.',
-            estimatedMinutes: operationMinutes((feature.lengthMm + feature.widthMm) / 80),
-            enabled: true,
-            origin: 'automatic',
-            order: index + 1,
-          },
-        ];
-      case 'slot':
-        return [
-          {
-            id: `op-${index + 1}-slot`,
-            name: `Mill slot ${feature.name}`,
-            kind: 'slot',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Centerline slotting with multiple depth passes.',
-            estimatedMinutes: operationMinutes((feature.lengthMm * feature.depthMm) / 180),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-      case 'hole_group':
-        return [
-          {
-            id: `op-${index + 1}-drill`,
-            name: `Drill ${feature.name}`,
-            kind: 'drill',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Spot as needed and drill all holes in one grouped cycle.',
-            estimatedMinutes: operationMinutes((feature.quantity * feature.depthMm) / 35),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-      case 'chamfer':
-        return [
-          {
-            id: `op-${index + 1}-chamfer`,
-            name: `Chamfer ${feature.name}`,
-            kind: 'chamfer',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Break exposed edges only; no implicit deburr on hidden edges.',
-            estimatedMinutes: operationMinutes(feature.lengthMm / 240),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-      case 'engraving':
-        return [
-          {
-            id: `op-${index + 1}-engrave`,
-            name: `Engrave ${feature.name}`,
-            kind: 'engrave',
-            featureId: feature.id,
-            toolId: tool.id,
-            toolName: tool.name,
-            setup: 'Setup 1 / Top side',
-            strategy: 'Single-line marking only; no filled engraving or embossing.',
-            estimatedMinutes: operationMinutes(feature.lengthMm / 90),
-            enabled: true,
-            origin: 'automatic',
-            order: index,
-          },
-        ];
-    }
+      switch (feature.kind) {
+        case 'top_surface':
+          return [
+            createOperation(
+              `op-${index + 1}-face`,
+              `Face ${feature.name}`,
+              'face',
+              feature,
+              tool,
+              operationMinutes(feature.areaMm2 / 1800),
+              'Face stock to establish Z datum.',
+            ),
+          ];
+        case 'contour':
+          return [
+            createOperation(
+              `op-${index + 1}-profile`,
+              `Profile ${feature.name}`,
+              'profile',
+              feature,
+              tool,
+              operationMinutes(feature.lengthMm / 110),
+              '2D contour with leave-on-finish stock for final wall cleanup.',
+            ),
+          ];
+        case 'pocket':
+          return [
+            createOperation(
+              `op-${index + 1}-pocket-rough`,
+              `Rough pocket ${feature.name}`,
+              'pocket',
+              feature,
+              tool,
+              operationMinutes((feature.areaMm2 * Math.max(feature.depthMm, 1)) / 9000),
+              'Adaptive roughing with conservative step-down.',
+            ),
+            createOperation(
+              `op-${index + 1}-pocket-finish`,
+              `Finish pocket ${feature.name}`,
+              'pocket',
+              feature,
+              tool,
+              operationMinutes((feature.lengthMm + feature.widthMm) / 80),
+              'Finish floor and walls after roughing.',
+            ),
+          ];
+        case 'slot':
+          return [
+            createOperation(
+              `op-${index + 1}-slot`,
+              `Mill slot ${feature.name}`,
+              'slot',
+              feature,
+              tool,
+              operationMinutes((feature.lengthMm * feature.depthMm) / 180),
+              'Centerline slotting with multiple depth passes.',
+            ),
+          ];
+        case 'hole_group':
+          return [
+            createOperation(
+              `op-${index + 1}-drill`,
+              `Drill ${feature.name}`,
+              'drill',
+              feature,
+              tool,
+              operationMinutes((feature.quantity * feature.depthMm) / 35),
+              'Spot as needed and drill all holes in one grouped cycle.',
+            ),
+          ];
+        case 'chamfer':
+          return [
+            createOperation(
+              `op-${index + 1}-chamfer`,
+              `Chamfer ${feature.name}`,
+              'chamfer',
+              feature,
+              tool,
+              operationMinutes(feature.lengthMm / 240),
+              'Break exposed edges only; no implicit deburr on hidden edges.',
+            ),
+          ];
+        case 'engraving':
+          return [
+            createOperation(
+              `op-${index + 1}-engrave`,
+              `Engrave ${feature.name}`,
+              'engrave',
+              feature,
+              tool,
+              operationMinutes(feature.lengthMm / 90),
+              'Single-line marking only; no filled engraving or embossing.',
+            ),
+          ];
+      }
     })
     .map((operation, index) => ({
       ...operation,
@@ -477,7 +411,7 @@ export function planPart(input: PartInput): DraftCamPlan {
     {
       id: 'check-material',
       title: 'Apply material-specific feeds and speeds',
-      rationale: 'v1 estimates cycle time only and does not own production cutting data.',
+      rationale: 'v2 estimates cycle time only and does not own production cutting data.',
       status: 'pending' as const,
     },
   ];
@@ -501,16 +435,22 @@ export function planPart(input: PartInput): DraftCamPlan {
   }
 
   const estimatedCycleTimeMinutes = Number(
-    operations
-      .reduce((sum, operation) => sum + operation.estimatedMinutes, 0)
-      .toFixed(1),
+    operations.reduce((sum, operation) => sum + operation.estimatedMinutes, 0).toFixed(1),
   );
+  const tools = defaultToolLibrary.tools.filter((tool) => toolIds.has(tool.id));
 
   return draftCamPlanSchema.parse({
     part,
+    machineProfile: defaultMachineProfile,
+    setups: defaultSetups,
     features,
+    operationGroups: buildOperationGroups(operations, features),
     operations,
-    tools: [...toolsById.values()],
+    toolLibrary: {
+      ...defaultToolLibrary,
+      tools,
+    },
+    tools,
     risks,
     checklist,
     estimatedCycleTimeMinutes: Math.max(estimatedCycleTimeMinutes, 0.5),
@@ -520,13 +460,15 @@ export function planPart(input: PartInput): DraftCamPlan {
       notes: ['Deterministic draft generated. Human review is required before release.'],
     },
     assumptions: [
-      'Input is structured JSON and already references intended manufacturing features.',
-      'No geometry kernel, toolpath verification, collision detection, or G-code output is implemented in v1.',
-      'Operation sequencing assumes one primary top-side setup.',
+      'Derived manufacturing scene only: viewport geometry is arranged from structured JSON, not from a CAD kernel.',
+      'Default tool library and machine profile are foundational examples, not a production catalog.',
+      'No toolpath engine, collision check, or postprocessor is active in this milestone.',
     ],
     summary: {
       featureCount: features.length,
       operationCount: operations.length,
+      enabledOperationCount: operations.filter((operation) => operation.enabled).length,
+      manualOperationCount: operations.filter((operation) => operation.origin === 'manual').length,
       highestRisk: highestRisk(risks),
     },
   });
@@ -534,20 +476,15 @@ export function planPart(input: PartInput): DraftCamPlan {
 
 export function approvePlan(request: ApprovalRequest): DraftCamPlan {
   const parsed = approvalRequestSchema.parse(request);
-  const approvalNotes = [...parsed.plan.approval.notes];
-
-  if (parsed.notes) {
-    approvalNotes.push(parsed.notes);
-  }
-
   return draftCamPlanSchema.parse({
     ...parsed.plan,
     approval: {
+      ...parsed.plan.approval,
       state: 'approved',
-      requiresHumanApproval: false,
+      requiresHumanApproval: true,
       approvedBy: parsed.approver,
       approvedAt: new Date().toISOString(),
-      notes: approvalNotes,
+      notes: parsed.notes ? [...parsed.plan.approval.notes, parsed.notes] : parsed.plan.approval.notes,
     },
   });
 }

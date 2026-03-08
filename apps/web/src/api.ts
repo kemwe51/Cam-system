@@ -1,4 +1,4 @@
-import type { CamReview, DraftCamPlan, PartInput, ProjectDraft } from '@cam/shared';
+import type { CamReview, DraftCamPlan, PartInput, ProjectDraft, ProjectSummary } from '@cam/shared';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
 
@@ -48,13 +48,17 @@ export function approveDraftPlan(plan: DraftCamPlan): Promise<DraftCamPlan> {
   });
 }
 
+export function listProjects(): Promise<{ projects: ProjectSummary[] }> {
+  return fetchJson<{ projects: ProjectSummary[] }>('/projects');
+}
+
 export function saveProjectDraft(projectDraft: ProjectDraft): Promise<ProjectDraft> {
-  return fetchJson<ProjectDraft>(`/drafts/${encodeURIComponent(projectDraft.projectId)}`, {
+  return fetchJson<ProjectDraft>(`/projects/${encodeURIComponent(projectDraft.projectId)}`, {
     method: 'PUT',
     body: JSON.stringify(projectDraft),
   });
 }
 
 export function loadProjectDraft(projectId: string): Promise<ProjectDraft> {
-  return fetchJson<ProjectDraft>(`/drafts/${encodeURIComponent(projectId)}`);
+  return fetchJson<ProjectDraft>(`/projects/${encodeURIComponent(projectId)}`);
 }
