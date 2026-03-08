@@ -241,7 +241,7 @@ describe('@cam/model', () => {
     expect(contourPreview.depthAnnotations.some((annotation) => annotation.includes('deterministic path candidate'))).toBe(true);
   });
 
-  it('builds a native workbench snapshot that links model, features, operations, tools, and previews', () => {
+  it('builds a native workbench snapshot that links model, features, operations, tools, toolpaths, and previews', () => {
     const source = createModelSource({
       id: 'import-json-sample',
       type: 'json',
@@ -278,13 +278,16 @@ describe('@cam/model', () => {
     expect(snapshot.schemaVersion).toBe('native-workbench-v1');
     expect(snapshot.projectId).toBe(projectId);
     expect(snapshot.metadata.featureCount).toBe(plan.features.length);
+    expect(snapshot.metadata.toolpathCandidateCount).toBe(plan.toolpathCandidates.length);
     expect(snapshot.metadata.resolvedLinkCount + snapshot.metadata.partialLinkCount).toBeGreaterThan(0);
     expect(snapshot.nodes.some((node) => node.kind === 'collection' && node.label === 'Model tree')).toBe(true);
     expect(snapshot.nodes.some((node) => node.kind === 'operation' && node.operationId === plan.operations[0]?.id)).toBe(true);
     expect(snapshot.nodes.some((node) => node.kind === 'tool' && node.toolId === plan.operations[0]?.toolId)).toBe(true);
+    expect(snapshot.nodes.some((node) => node.kind === 'toolpath_candidate')).toBe(true);
     expect(snapshot.nodes.some((node) => node.kind === 'operation_preview')).toBe(true);
-    expect(snapshot.selectionLinks.some((link) => link.operationNodeId && link.previewNodeId)).toBe(true);
+    expect(snapshot.selectionLinks.some((link) => link.operationNodeId && link.toolpathNodeId && link.previewNodeId)).toBe(true);
     expect(snapshot.linkMappings.some((mapping) => mapping.resolution === 'partial' || mapping.resolution === 'resolved')).toBe(true);
+    expect(snapshot.linkMappings.some((mapping) => mapping.toolpathCandidateId)).toBe(true);
     expect(snapshot.displayLayers.some((layer) => layer.kind === 'path_plan')).toBe(true);
     expect(snapshot.displayLayers.some((layer) => layer.kind === 'inspection')).toBe(true);
   });

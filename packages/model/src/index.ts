@@ -24,6 +24,7 @@ import {
   type PathPlan,
   type PathPlanSegment,
   type PreviewPath,
+  type ToolpathCandidate,
   partInputSchema,
   type PartInput,
 } from '@cam/shared';
@@ -244,7 +245,7 @@ export type ProjectRecord = z.infer<typeof projectRecordSchema>;
 export const nativeWorkbenchNodeSchema = z.object({
   id: z.string().min(1),
   stableId: z.string().min(1),
-  kind: z.enum(['project', 'collection', 'source', 'model_entity', 'feature', 'operation', 'tool', 'operation_preview']),
+  kind: z.enum(['project', 'collection', 'source', 'model_entity', 'feature', 'operation', 'tool', 'operation_preview', 'toolpath_candidate']),
   label: z.string().min(1),
   parentId: z.string().min(1).optional(),
   status: z.enum(['ready', 'warning', 'placeholder']).default('ready'),
@@ -273,11 +274,12 @@ export type NativeWorkbenchLinkResolution = z.infer<typeof nativeWorkbenchLinkRe
 
 export const nativeWorkbenchSelectionLinkSchema = z.object({
   id: z.string().min(1),
-  syncChannels: z.array(z.enum(['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector', 'warnings'])).default([]),
+  syncChannels: z.array(z.enum(['model_tree', 'features', 'operations', 'tools', 'toolpaths', 'viewport', 'inspector', 'warnings'])).default([]),
   modelEntityNodeId: z.string().min(1).optional(),
   featureNodeId: z.string().min(1).optional(),
   operationNodeId: z.string().min(1).optional(),
   toolNodeId: z.string().min(1).optional(),
+  toolpathNodeId: z.string().min(1).optional(),
   previewNodeId: z.string().min(1).optional(),
   sourceGeometryIds: z.array(z.string().min(1)).default([]),
   topologyRefs: z.array(nativeWorkbenchTopologyRefSchema).default([]),
@@ -292,6 +294,7 @@ export const nativeWorkbenchLinkMappingSchema = z.object({
   featureId: z.string().min(1).optional(),
   operationId: z.string().min(1).optional(),
   toolId: z.string().min(1).optional(),
+  toolpathCandidateId: z.string().min(1).optional(),
   previewId: z.string().min(1).optional(),
   sourceGeometryIds: z.array(z.string().min(1)).default([]),
   topologyRefs: z.array(nativeWorkbenchTopologyRefSchema).default([]),
@@ -328,6 +331,7 @@ export const nativeWorkbenchSnapshotSchema = z.object({
     extractedFeatureCount: z.number().int().nonnegative(),
     operationCount: z.number().int().nonnegative(),
     toolCount: z.number().int().nonnegative(),
+    toolpathCandidateCount: z.number().int().nonnegative(),
     previewCount: z.number().int().nonnegative(),
     hasPlaceholderModel: z.boolean(),
     resolvedLinkCount: z.number().int().nonnegative(),
@@ -384,15 +388,26 @@ function linkResolution(values: {
   featureNodeId: string | undefined;
   operationNodeId: string | undefined;
   toolNodeId: string | undefined;
+  toolpathNodeId: string | undefined;
   previewNodeId: string | undefined;
 }): NativeWorkbenchLinkResolution {
-  if (values.operationNodeId && values.toolNodeId && values.featureNodeId && (values.entityNodeId || values.previewNodeId)) {
+  if (values.operationNodeId && values.toolNodeId && values.featureNodeId && values.toolpathNodeId && (values.entityNodeId || values.previewNodeId)) {
     return 'resolved';
   }
-  if (values.operationNodeId && (values.toolNodeId || values.featureNodeId || values.entityNodeId || values.previewNodeId)) {
+  if (values.operationNodeId && (values.toolNodeId || values.featureNodeId || values.entityNodeId || values.toolpathNodeId || values.previewNodeId)) {
     return 'partial';
   }
   return 'unresolved';
+}
+
+function topologyRefsForToolpathCandidate(candidate: ToolpathCandidate): NativeWorkbenchTopologyRef[] {
+  return candidate.selectedTopologyIds.map((persistentId, index) => nativeWorkbenchTopologyRefSchema.parse({
+    id: `topology-toolpath-${sanitizeId(candidate.id)}-${index + 1}`,
+    system: 'source_geometry',
+    entityType: 'source_geometry',
+    persistentId,
+    label: persistentId,
+  }));
 }
 
 function featureMetadata(source: Pick<
@@ -1173,16 +1188,25 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
   const featuresCollectionId = `${projectNodeId}-collection-features`;
   const operationsCollectionId = `${projectNodeId}-collection-operations`;
   const toolsCollectionId = `${projectNodeId}-collection-tools`;
+  const toolpathsCollectionId = `${projectNodeId}-collection-toolpaths`;
   const previewsCollectionId = `${projectNodeId}-collection-path-previews`;
   const model = project.derivedModel;
   const plan = project.plan;
   const operationPreviews = model ? deriveOperationPreviews(model, plan.operations) : [];
+  const toolpathCandidates = plan.toolpathCandidates ?? [];
   const featureLinksByFeatureId = new Map((model?.featureGeometryLinks ?? []).map((link) => [link.featureId, link]));
   const previewByOperationId = new Map(operationPreviews.map((preview) => [preview.operationId, preview]));
+  const toolpathCandidatesByOperationId = new Map<string, ToolpathCandidate[]>();
+  for (const candidate of toolpathCandidates) {
+    const existing = toolpathCandidatesByOperationId.get(candidate.operationId) ?? [];
+    existing.push(candidate);
+    toolpathCandidatesByOperationId.set(candidate.operationId, existing);
+  }
   const entityNodeIds = new Map<string, string>();
   const featureNodeIds = new Map<string, string>();
   const operationNodeIds = new Map<string, string>();
   const toolNodeIds = new Map<string, string>();
+  const toolpathNodeIds = new Map<string, string>();
   const previewNodeIds = new Map<string, string>();
   const catalog = plan.toolLibrary.tools.length > 0 ? plan.toolLibrary.tools : plan.tools;
   const usedToolIds = new Set(plan.operations.map((operation) => operation.toolId));
@@ -1208,6 +1232,13 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       kind: 'operation_overlay',
       visible: true,
       status: plan.operations.length > 0 ? 'ready' : 'placeholder',
+    }),
+    nativeWorkbenchDisplayLayerSchema.parse({
+      id: 'native-toolpaths',
+      label: 'Toolpath candidates',
+      kind: 'path_plan',
+      visible: true,
+      status: toolpathCandidates.length > 0 ? 'ready' : 'placeholder',
     }),
   ];
 
@@ -1251,6 +1282,14 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       kind: 'collection',
       label: 'Tools',
       parentId: projectNodeId,
+    }),
+    nativeWorkbenchNodeSchema.parse({
+      id: toolpathsCollectionId,
+      stableId: `${project.projectId}:toolpaths`,
+      kind: 'collection',
+      label: 'Toolpath candidates',
+      parentId: projectNodeId,
+      status: toolpathCandidates.length > 0 ? 'ready' : 'placeholder',
     }),
     nativeWorkbenchNodeSchema.parse({
       id: previewsCollectionId,
@@ -1359,6 +1398,31 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
     }));
   }
 
+  for (const candidate of toolpathCandidates) {
+    const nodeId = `node-toolpath-${sanitizeId(candidate.id)}`;
+    toolpathNodeIds.set(candidate.id, nodeId);
+    nodes.push(nativeWorkbenchNodeSchema.parse({
+      id: nodeId,
+      stableId: candidate.id,
+      kind: 'toolpath_candidate',
+      label: `${candidate.strategyKind.replaceAll('_', ' ')} · ${candidate.operationId}`,
+      parentId: toolpathsCollectionId,
+      status: candidate.warnings.length > 0 ? 'warning' : 'ready',
+      operationId: candidate.operationId,
+      featureId: candidate.featureId,
+      toolId: candidate.toolId,
+      sourceGeometryIds: candidate.sourceGeometryRefs,
+      metadata: {
+        strategyKind: candidate.strategyKind,
+        stage: candidate.stage,
+        passCount: String(candidate.passes.length),
+        depthLayerCount: String(candidate.depthLayers.length),
+        primitiveCount: String(candidate.primitives.length),
+        displayLayerId: 'native-toolpaths',
+      },
+    }));
+  }
+
   for (const preview of operationPreviews) {
     const nodeId = `node-preview-${sanitizeId(preview.id)}`;
     previewNodeIds.set(preview.operationId, nodeId);
@@ -1384,19 +1448,25 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
   const linkMappings: NativeWorkbenchLinkMapping[] = plan.operations.map((operation) => {
     const featureLink = featureLinksByFeatureId.get(operation.featureId);
     const preview = previewByOperationId.get(operation.id);
+    const operationToolpathCandidates = toolpathCandidatesByOperationId.get(operation.id) ?? [];
+    const toolpathCandidate = operationToolpathCandidates[0];
     const sourceGeometryIds = featureLink?.sourceGeometryIds ?? [];
-    const topologyRefs = sourceGeometryTopologyRefs(sourceGeometryIds);
+    const topologyRefs = toolpathCandidate
+      ? topologyRefsForToolpathCandidate(toolpathCandidate)
+      : sourceGeometryTopologyRefs(sourceGeometryIds);
     const resolution = linkResolution({
       entityNodeId: featureLink?.entityId ? entityNodeIds.get(featureLink.entityId) : undefined,
       featureNodeId: featureNodeIds.get(operation.featureId),
       operationNodeId: operationNodeIds.get(operation.id),
       toolNodeId: toolNodeIds.get(operation.toolId),
+      toolpathNodeId: toolpathCandidate ? toolpathNodeIds.get(toolpathCandidate.id) : undefined,
       previewNodeId: preview ? previewNodeIds.get(operation.id) : undefined,
     });
     const warnings = [
       ...(featureLink ? [] : [`Operation ${operation.name} has no model-entity link yet.`]),
       ...(featureNodeIds.has(operation.featureId) ? [] : [`Operation ${operation.name} is not linked to an extracted feature node.`]),
       ...(toolNodeIds.has(operation.toolId) ? [] : [`Operation ${operation.name} references a tool that is not present in the native workbench tree.`]),
+      ...(toolpathCandidate ? [] : [`Operation ${operation.name} does not have a toolpath candidate bridge yet.`]),
       ...(project.sourceType === 'step' && topologyRefs.length === 0 ? [`STEP topology for ${operation.name} is not linked yet. Native STEP/XDE selection remains a local OCCT follow-up.`] : []),
     ];
 
@@ -1406,6 +1476,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       ...(operation.featureId ? { featureId: operation.featureId } : {}),
       operationId: operation.id,
       toolId: operation.toolId,
+      ...(toolpathCandidate ? { toolpathCandidateId: toolpathCandidate.id } : {}),
       ...(preview ? { previewId: preview.id } : {}),
       sourceGeometryIds: featureLink?.sourceGeometryIds ?? [],
       topologyRefs,
@@ -1418,11 +1489,12 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
     const warnings = [...mapping.warnings];
     return nativeWorkbenchSelectionLinkSchema.parse({
       id: `selection-link-${sanitizeId(mapping.operationId ?? mapping.id)}`,
-      syncChannels: ['model_tree', 'features', 'operations', 'tools', 'viewport', 'inspector'],
+      syncChannels: ['model_tree', 'features', 'operations', 'tools', 'toolpaths', 'viewport', 'inspector'],
       ...(mapping.entityId ? { modelEntityNodeId: entityNodeIds.get(mapping.entityId) } : {}),
       ...(mapping.featureId ? { featureNodeId: featureNodeIds.get(mapping.featureId) } : {}),
       ...(mapping.operationId ? { operationNodeId: operationNodeIds.get(mapping.operationId) } : {}),
       ...(mapping.toolId ? { toolNodeId: toolNodeIds.get(mapping.toolId) } : {}),
+      ...(mapping.toolpathCandidateId ? { toolpathNodeId: toolpathNodeIds.get(mapping.toolpathCandidateId) } : {}),
       ...(mapping.previewId && mapping.operationId ? { previewNodeId: previewNodeIds.get(mapping.operationId) } : {}),
       sourceGeometryIds: mapping.sourceGeometryIds,
       topologyRefs: mapping.topologyRefs,
@@ -1454,6 +1526,7 @@ export function buildNativeWorkbenchSnapshot(project: ProjectRecord): NativeWork
       extractedFeatureCount: model?.extractedFeatures.length ?? 0,
       operationCount: plan.operations.length,
       toolCount: usedTools.length,
+      toolpathCandidateCount: toolpathCandidates.length,
       previewCount: operationPreviews.length,
       hasPlaceholderModel: model?.status === 'placeholder',
       resolvedLinkCount,

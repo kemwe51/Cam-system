@@ -14,6 +14,9 @@
 #include <XCAFApp_Application.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Shape.hxx>
 #endif
 
 namespace {
@@ -59,22 +62,71 @@ QString shapeType(const Handle(XCAFDoc_ShapeTool)& shapeTool, const TDF_Label& l
   return QStringLiteral("shape");
 }
 
-void collectShapeNodes(const Handle(XCAFDoc_ShapeTool)& shapeTool, const TDF_Label& label, const QString& parentId, QList<NativeStepTreeNode>& nodes) {
+QString topologyPersistentId(const QString& parentPersistentId, const QString& entityType, int index) {
+  return QStringLiteral("%1/%2-%3").arg(parentPersistentId).arg(entityType).arg(index);
+}
+
+void appendTopologyNodes(const TopoDS_Shape& shape, const QString& parentId, const QString& parentPersistentId, QList<NativeStepTreeNode>& nodes, int& topologyNodeCount) {
+  if (shape.IsNull()) {
+    return;
+  }
+
+  struct TopologySpec {
+    TopAbs_ShapeEnum shapeType;
+    QString entityType;
+    QString labelPrefix;
+  };
+
+  const QList<TopologySpec> specs = {
+    {TopAbs_SOLID, QStringLiteral("solid"), QStringLiteral("Solid")},
+    {TopAbs_SHELL, QStringLiteral("shell"), QStringLiteral("Shell")},
+    {TopAbs_FACE, QStringLiteral("face"), QStringLiteral("Face")},
+    {TopAbs_EDGE, QStringLiteral("edge"), QStringLiteral("Edge")},
+    {TopAbs_VERTEX, QStringLiteral("vertex"), QStringLiteral("Vertex")},
+  };
+
+  for (const auto& spec : specs) {
+    int index = 0;
+    for (TopExp_Explorer explorer(shape, spec.shapeType); explorer.More(); explorer.Next()) {
+      ++index;
+      const auto persistentId = topologyPersistentId(parentPersistentId, spec.entityType, index);
+      nodes.push_back({
+        .id = QStringLiteral("step-node-%1").arg(persistentId),
+        .parentId = parentId,
+        .label = QStringLiteral("%1 %2").arg(spec.labelPrefix).arg(index),
+        .persistentId = persistentId,
+        .entityType = spec.entityType,
+        .selectionId = persistentId,
+        .selectionFilter = spec.entityType,
+        .topologyBacked = true,
+      });
+      ++topologyNodeCount;
+    }
+  }
+}
+
+void collectShapeNodes(const Handle(XCAFDoc_ShapeTool)& shapeTool, const TDF_Label& label, const QString& parentId, QList<NativeStepTreeNode>& nodes, int& topologyNodeCount) {
   const auto entry = labelEntry(label);
   const auto text = labelName(label);
+  const auto currentEntityType = shapeType(shapeTool, label);
   nodes.push_back({
     .id = QStringLiteral("step-node-%1").arg(entry),
     .parentId = parentId,
     .label = text.isEmpty() ? entry : text,
     .persistentId = entry,
-    .entityType = shapeType(shapeTool, label),
+    .entityType = currentEntityType,
+    .selectionId = entry,
+    .selectionFilter = currentEntityType,
+    .topologyBacked = true,
   });
+
+  const auto currentNodeId = nodes.back().id;
+  appendTopologyNodes(shapeTool->GetShape(label), currentNodeId, entry, nodes, topologyNodeCount);
 
   TDF_LabelSequence children;
   shapeTool->GetComponents(label, children);
-  const auto currentNodeId = nodes.back().id;
   for (Standard_Integer index = 1; index <= children.Length(); ++index) {
-    collectShapeNodes(shapeTool, children.Value(index), currentNodeId, nodes);
+    collectShapeNodes(shapeTool, children.Value(index), currentNodeId, nodes, topologyNodeCount);
   }
 }
 #endif
@@ -87,6 +139,7 @@ NativeStepLoadResult OcctStepLoader::describeAvailability() {
   result.status = QStringLiteral("ready_for_step_xde_loading");
   result.statusMessage = QStringLiteral("Open CASCADE was found. Native STEP/XDE loading is available, and viewport rendering still needs local AIS/V3d hookup for full geometry display.");
   result.occtAvailable = true;
+  result.topologySelectionReady = true;
   result.prerequisites = {
     QStringLiteral("Local OCCT runtime DLLs available next to the executable or on PATH"),
     QStringLiteral("Viewport host wiring to AIS_InteractiveContext and V3d_View"),
@@ -149,20 +202,23 @@ NativeStepLoadResult OcctStepLoader::loadStepDocument(const QString& filePath) {
   result.occtAvailable = true;
   result.xdeDocumentLoaded = true;
   result.viewerRuntimeReady = false;
+  result.topologySelectionReady = true;
   result.freeShapeCount = freeShapes.Length();
-  result.status = QStringLiteral("xde_loaded_metadata_only");
-  result.statusMessage = QStringLiteral("STEP/XDE document loaded. Model-tree metadata is available now; viewport rendering still requires AIS/V3d display-object wiring in a local OCCT-enabled build.");
+  result.status = QStringLiteral("xde_loaded_with_topology_metadata");
+  result.statusMessage = QStringLiteral("STEP/XDE document loaded. Model tree and topology-selection metadata are available now; viewport rendering still requires AIS/V3d display-object wiring in a local OCCT-enabled build.");
   result.warnings = {
-    QStringLiteral("Topology-backed face/edge/solid selection is not wired into the viewport yet."),
-    QStringLiteral("This milestone loads STEP/XDE structure and prepares selection ids without claiming finished model rendering."),
+    QStringLiteral("Topology-backed solids, shells, faces, edges, and vertices are available as native selection metadata."),
+    QStringLiteral("Viewport highlighting still needs local AIS/V3d display-object wiring before native face/edge selection can be visually verified."),
   };
 
   for (Standard_Integer index = 1; index <= freeShapes.Length(); ++index) {
-    collectShapeNodes(shapeTool, freeShapes.Value(index), {}, result.nodes);
+    collectShapeNodes(shapeTool, freeShapes.Value(index), {}, result.nodes, result.topologyNodeCount);
   }
 
   if (result.nodes.isEmpty()) {
     result.warnings.push_back(QStringLiteral("STEP document loaded without free shapes. Check the source model or OCCT transfer settings."));
+  } else {
+    result.warnings.push_back(QStringLiteral("Loaded %1 STEP/XDE nodes and %2 topology-backed selection nodes.").arg(result.nodes.size()).arg(result.topologyNodeCount));
   }
 
   return result;

@@ -531,6 +531,82 @@ export const operationPathProfileSchema = z.object({
   assumptions: z.array(pathPlanAssumptionSchema).default([]),
 });
 
+export const toolpathProcessingStageSchema = z.enum(['planning_hint', 'toolpath_candidate', 'postprocessed_nc']);
+
+export const toolpathPrimitiveKindSchema = z.enum([
+  'entry_motion',
+  'contour_pass',
+  'drill_cycle',
+  'pocket_pass',
+  'slot_pass',
+  'link_motion',
+  'exit_motion',
+]);
+
+export const toolpathPassKindSchema = z.enum(['roughing', 'finishing', 'drilling', 'cleanup']);
+
+export const toolpathCuttingReferenceSchema = z.object({
+  cutterCompensation: z.enum(['centerline_only', 'left_comp_pending', 'right_comp_pending']).default('centerline_only'),
+  radialStockToLeaveMm: nonNegativeNumber.default(0),
+  axialStockToLeaveMm: nonNegativeNumber.default(0),
+});
+
+export const toolpathDepthLayerSchema = z.object({
+  id: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  topZMm: z.number(),
+  bottomZMm: z.number(),
+  axialStepMm: positiveNumber,
+});
+
+export const toolpathPassSchema = z.object({
+  id: z.string().min(1),
+  candidateId: z.string().min(1),
+  kind: toolpathPassKindSchema,
+  label: z.string().min(1),
+  depthLayerId: z.string().min(1),
+  primitiveIds: z.array(z.string().min(1)).default([]),
+  pathPlanId: z.string().min(1).optional(),
+});
+
+export const toolpathPrimitiveSchema = z.object({
+  id: z.string().min(1),
+  candidateId: z.string().min(1),
+  passId: z.string().min(1),
+  kind: toolpathPrimitiveKindSchema,
+  label: z.string().min(1),
+  pathPlanId: z.string().min(1).optional(),
+  pathSegmentIds: z.array(z.string().min(1)).default([]),
+});
+
+export const toolpathCandidateSchema = z.object({
+  id: z.string().min(1),
+  operationId: z.string().min(1),
+  featureId: z.string().min(1),
+  setupId: z.string().min(1),
+  toolId: z.string().min(1),
+  stage: toolpathProcessingStageSchema.default('toolpath_candidate'),
+  strategyKind: z.enum(['outside_contour', 'inside_contour', 'drill_hole_group', 'pocket', 'slot']),
+  cutterReference: toolpathCuttingReferenceSchema.default({
+    cutterCompensation: 'centerline_only',
+    radialStockToLeaveMm: 0,
+    axialStockToLeaveMm: 0,
+  }),
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+  selectedTopologyIds: z.array(z.string().min(1)).default([]),
+  centerlineSegments: z.array(pathPlanSegmentSchema).default([]),
+  depthLayers: z.array(toolpathDepthLayerSchema).default([]),
+  passes: z.array(toolpathPassSchema).default([]),
+  primitives: z.array(toolpathPrimitiveSchema).default([]),
+  entryStrategy: entryStrategySchema.default('none'),
+  exitStrategy: exitStrategySchema.default('none'),
+  clearanceStrategy: clearanceStrategySchema.default('safe_clearance'),
+  retractStrategy: clearanceStrategySchema.default('safe_clearance'),
+  warnings: z.array(pathPlanWarningSchema).default([]),
+  assumptions: z.array(pathPlanAssumptionSchema).default([]),
+  notes: z.array(z.string().min(1)).default([]),
+});
+
 export const toolSelectionReasonSchema = z.object({
   toolClass: toolClassSchema,
   reason: z.string().min(1),
@@ -698,6 +774,7 @@ export const operationSchema = z.object({
   machiningIntent: machiningIntentSchema.optional(),
   depthProfile: operationDepthProfileSchema.optional(),
   pathProfile: operationPathProfileSchema.optional(),
+  toolpathCandidateIds: z.array(z.string().min(1)).default([]),
   links: z.array(operationLinkSchema).default([]),
   warnings: z.array(planningWarningSchema).default([]),
   assumptions: z.array(machiningAssumptionSchema).default([]),
@@ -764,6 +841,7 @@ export const draftCamPlanSchema = z.object({
   features: z.array(normalizedFeatureSchema),
   operationGroups: z.array(operationGroupSchema).default([]),
   operations: z.array(operationSchema),
+  toolpathCandidates: z.array(toolpathCandidateSchema).default([]),
   toolLibrary: toolLibrarySchema,
   tools: z.array(toolSchema),
   risks: z.array(riskSchema),
@@ -1163,6 +1241,14 @@ export type SafeClearance = z.infer<typeof safeClearanceSchema>;
 export type SelectedEntity = z.infer<typeof selectedEntitySchema>;
 export type Setup = z.infer<typeof setupSchema>;
 export type SetupDefinition = z.infer<typeof setupSchema>;
+export type ToolpathCandidate = z.infer<typeof toolpathCandidateSchema>;
+export type ToolpathCuttingReference = z.infer<typeof toolpathCuttingReferenceSchema>;
+export type ToolpathDepthLayer = z.infer<typeof toolpathDepthLayerSchema>;
+export type ToolpathPass = z.infer<typeof toolpathPassSchema>;
+export type ToolpathPassKind = z.infer<typeof toolpathPassKindSchema>;
+export type ToolpathPrimitive = z.infer<typeof toolpathPrimitiveSchema>;
+export type ToolpathPrimitiveKind = z.infer<typeof toolpathPrimitiveKindSchema>;
+export type ToolpathProcessingStage = z.infer<typeof toolpathProcessingStageSchema>;
 export type SetupOrientation = z.infer<typeof setupOrientationSchema>;
 export type SetupPlane = z.infer<typeof setupPlaneSchema>;
 export type SetupReference = z.infer<typeof setupReferenceSchema>;

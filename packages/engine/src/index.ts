@@ -22,6 +22,10 @@ import {
   pathPlanWarningSchema,
   planningWarningSchema,
   samplePartInput,
+  toolpathCandidateSchema,
+  toolpathDepthLayerSchema,
+  toolpathPassSchema,
+  toolpathPrimitiveSchema,
   type ApprovalRequest,
   type DepthAssumption,
   type DepthWarning,
@@ -48,6 +52,10 @@ import {
   type Risk,
   type RiskLevel,
   type Tool,
+  type ToolpathCandidate,
+  type ToolpathDepthLayer,
+  type ToolpathPass,
+  type ToolpathPrimitive,
   type ToolClass,
   type ToolSelectionReason,
 } from '@cam/shared';
@@ -1516,6 +1524,259 @@ function buildOperationPathProfile(operation: Operation, feature: NormalizedFeat
   });
 }
 
+function toolpathStrategyKind(operation: Operation, feature: NormalizedFeature): ToolpathCandidate['strategyKind'] {
+  if (operation.kind === 'drill') {
+    return 'drill_hole_group';
+  }
+  if (operation.kind === 'pocket') {
+    return 'pocket';
+  }
+  if (operation.kind === 'slot') {
+    return 'slot';
+  }
+  if (operation.kind === 'profile' && feature.machiningIntent?.classification === 'inside_contour') {
+    return 'inside_contour';
+  }
+  return 'outside_contour';
+}
+
+function buildToolpathDepthLayers(pathPlan: PathPlan): ToolpathDepthLayer[] {
+  const topZMm = pathPlan.topReferenceZMm ?? 0;
+  const targetDepthMm = pathPlan.targetDepthMm ?? 0;
+  if (targetDepthMm <= 0) {
+    return [];
+  }
+
+  const requestedLayers = Math.max(pathPlan.passDepthPlan?.roughingLayerCount ?? 1, 1);
+  const axialStepMm = roundNumber(targetDepthMm / requestedLayers, 4);
+  return Array.from({ length: requestedLayers }, (_, index) => {
+    const layerTop = roundNumber(topZMm - axialStepMm * index, 4);
+    const layerBottom = index === requestedLayers - 1
+      ? roundNumber(topZMm - targetDepthMm, 4)
+      : roundNumber(topZMm - axialStepMm * (index + 1), 4);
+    return toolpathDepthLayerSchema.parse({
+      id: `${pathPlan.id}-depth-layer-${index + 1}`,
+      index,
+      topZMm: layerTop,
+      bottomZMm: layerBottom,
+      axialStepMm: Math.max(roundNumber(layerTop - layerBottom, 4), 0.0001),
+    });
+  });
+}
+
+function buildToolpathPassKind(operation: Operation, pathPlan: PathPlan): ToolpathPass['kind'] {
+  if (operation.kind === 'drill' || pathPlan.intent === 'drilling') {
+    return 'drilling';
+  }
+  if (pathPlan.intent === 'finishing') {
+    return 'finishing';
+  }
+  if (operation.kind === 'slot' || pathPlan.intent === 'slotting') {
+    return 'cleanup';
+  }
+  return 'roughing';
+}
+
+function buildToolpathPrimitivesForPass(
+  candidateId: string,
+  passId: string,
+  operation: Operation,
+  pathPlan: PathPlan,
+): ToolpathPrimitive[] {
+  const entrySegmentIds = uniqueStrings([
+    ...(pathPlan.leadIn?.segmentIds ?? []),
+    ...pathPlan.segments
+      .filter((segment) => segment.motionType === 'rapid_move' || segment.motionType === 'plunge_move')
+      .map((segment) => segment.id),
+  ]);
+  const exitSegmentIds = uniqueStrings([
+    ...(pathPlan.leadOut?.segmentIds ?? []),
+    ...pathPlan.segments.filter((segment) => segment.motionType === 'retract_move').map((segment) => segment.id),
+  ]);
+  const cuttingSegmentIds = pathPlan.segments
+    .filter((segment) => {
+      if (operation.kind === 'drill') {
+        return segment.motionType === 'plunge_move';
+      }
+      return segment.motionType === 'feed_move';
+    })
+    .map((segment) => segment.id);
+  const linkSegmentIds = pathPlan.segments
+    .filter((segment) => segment.motionType === 'rapid_move' || segment.motionType === 'retract_move')
+    .map((segment) => segment.id)
+    .filter((segmentId) => !entrySegmentIds.includes(segmentId) && !exitSegmentIds.includes(segmentId));
+
+  const primitives: ToolpathPrimitive[] = [];
+  if (entrySegmentIds.length > 0) {
+    primitives.push(toolpathPrimitiveSchema.parse({
+      id: `${passId}-primitive-entry`,
+      candidateId,
+      passId,
+      kind: 'entry_motion',
+      label: `${operation.name} entry`,
+      pathPlanId: pathPlan.id,
+      pathSegmentIds: entrySegmentIds,
+    }));
+  }
+  if (cuttingSegmentIds.length > 0) {
+    primitives.push(toolpathPrimitiveSchema.parse({
+      id: `${passId}-primitive-cut`,
+      candidateId,
+      passId,
+      kind:
+        operation.kind === 'drill'
+          ? 'drill_cycle'
+          : operation.kind === 'pocket'
+            ? 'pocket_pass'
+            : operation.kind === 'slot'
+              ? 'slot_pass'
+              : 'contour_pass',
+      label: `${operation.name} cut`,
+      pathPlanId: pathPlan.id,
+      pathSegmentIds: cuttingSegmentIds,
+    }));
+  }
+  if (linkSegmentIds.length > 0) {
+    primitives.push(toolpathPrimitiveSchema.parse({
+      id: `${passId}-primitive-link`,
+      candidateId,
+      passId,
+      kind: 'link_motion',
+      label: `${operation.name} link`,
+      pathPlanId: pathPlan.id,
+      pathSegmentIds: linkSegmentIds,
+    }));
+  }
+  if (exitSegmentIds.length > 0) {
+    primitives.push(toolpathPrimitiveSchema.parse({
+      id: `${passId}-primitive-exit`,
+      candidateId,
+      passId,
+      kind: 'exit_motion',
+      label: `${operation.name} exit`,
+      pathPlanId: pathPlan.id,
+      pathSegmentIds: exitSegmentIds,
+    }));
+  }
+  return primitives;
+}
+
+function buildToolpathCandidateFromPathPlan(operation: Operation, feature: NormalizedFeature, tool: Tool, pathPlan: PathPlan, index: number): ToolpathCandidate {
+  const candidateId = `${operation.id}-toolpath-${index + 1}`;
+  const depthLayers = buildToolpathDepthLayers(pathPlan);
+  const defaultLayerId = `${candidateId}-depth-layer-1`;
+  const normalizedDepthLayers = depthLayers.length > 0
+    ? depthLayers
+    : [toolpathDepthLayerSchema.parse({
+        id: defaultLayerId,
+        index: 0,
+        topZMm: pathPlan.topReferenceZMm ?? 0,
+        bottomZMm: roundNumber((pathPlan.topReferenceZMm ?? 0) - (pathPlan.targetDepthMm ?? 0), 4),
+        axialStepMm: Math.max(pathPlan.targetDepthMm ?? 0.0001, 0.0001),
+      })];
+
+  const passes: ToolpathPass[] = [];
+  const primitives: ToolpathPrimitive[] = [];
+  normalizedDepthLayers.forEach((depthLayer, depthIndex) => {
+    const passId = `${candidateId}-pass-${depthIndex + 1}`;
+    const pass = toolpathPassSchema.parse({
+      id: passId,
+      candidateId,
+      kind: buildToolpathPassKind(operation, pathPlan),
+      label: `${operation.name} pass ${depthIndex + 1}`,
+      depthLayerId: depthLayer.id,
+      pathPlanId: pathPlan.id,
+    });
+    const passPrimitives = buildToolpathPrimitivesForPass(candidateId, passId, operation, pathPlan);
+    pass.primitiveIds = passPrimitives.map((primitive) => primitive.id);
+    passes.push(pass);
+    primitives.push(...passPrimitives);
+  });
+
+  return toolpathCandidateSchema.parse({
+    id: candidateId,
+    operationId: operation.id,
+    featureId: operation.featureId,
+    setupId: operation.setupId,
+    toolId: tool.id,
+    stage: 'toolpath_candidate',
+    strategyKind: toolpathStrategyKind(operation, feature),
+    cutterReference: {
+      cutterCompensation: 'centerline_only',
+      radialStockToLeaveMm: operation.kind === 'profile' ? 0.2 : 0,
+      axialStockToLeaveMm: pathPlan.intent === 'finishing' ? 0 : 0.15,
+    },
+    sourceGeometryRefs: feature.sourceGeometryRefs,
+    selectedTopologyIds: feature.sourceGeometryRefs,
+    centerlineSegments: pathPlan.segments,
+    depthLayers: normalizedDepthLayers,
+    passes,
+    primitives,
+    entryStrategy: operation.pathProfile?.entryStrategy ?? pathPlan.entryStrategy,
+    exitStrategy: operation.pathProfile?.exitStrategy ?? pathPlan.exitStrategy,
+    clearanceStrategy: operation.pathProfile?.clearanceStrategy ?? pathPlan.clearanceStrategy,
+    retractStrategy: operation.pathProfile?.retractStrategy ?? pathPlan.retractStrategy,
+    warnings: [
+      ...pathPlan.warnings,
+      pathPlanWarningSchema.parse({
+        code: 'toolpath_centerline_only',
+        message: 'Toolpath candidate currently represents cutter centerline motion only. Compensation, holder checks, and postprocessed NC remain outside this milestone.',
+        severity: 'medium',
+        reviewRequired: true,
+      }),
+    ],
+    assumptions: [
+      ...pathPlan.assumptions,
+      pathPlanAssumptionSchema.parse({
+        id: `${candidateId}-kernel-foundation`,
+        label: 'Kernel foundation candidate only',
+        description: 'This toolpath candidate is deterministic and geometry-linked, but it is still a first kernel foundation rather than a verified industrial toolpath or postprocessed NC program.',
+        reviewRequired: true,
+      }),
+    ],
+    notes: [
+      `Derived from ${pathPlan.label}.`,
+      `Linked tool ${tool.name} (${tool.diameterMm.toFixed(1)} mm).`,
+    ],
+  });
+}
+
+export function deriveToolpathCandidatesForPlan(planInput: DraftCamPlan): ToolpathCandidate[] {
+  const plan = draftCamPlanSchema.parse(planInput);
+  const featureById = new Map(plan.features.map((feature) => [feature.id, feature]));
+  const toolById = new Map(plan.tools.map((tool) => [tool.id, tool]));
+  return plan.operations.flatMap((operation) => {
+    const feature = featureById.get(operation.featureId);
+    const tool = toolById.get(operation.toolId);
+    if (!feature || !tool || !operation.pathProfile?.pathPlans.length) {
+      return [];
+    }
+    return operation.pathProfile.pathPlans.map((pathPlan, index) =>
+      buildToolpathCandidateFromPathPlan(operation, feature, tool, pathPlan, index),
+    );
+  });
+}
+
+function withToolpathCandidates(planInput: DraftCamPlan): DraftCamPlan {
+  const plan = draftCamPlanSchema.parse(planInput);
+  const toolpathCandidates = deriveToolpathCandidatesForPlan(plan);
+  const toolpathCandidateIdsByOperation = new Map<string, string[]>();
+  for (const candidate of toolpathCandidates) {
+    const existing = toolpathCandidateIdsByOperation.get(candidate.operationId) ?? [];
+    existing.push(candidate.id);
+    toolpathCandidateIdsByOperation.set(candidate.operationId, existing);
+  }
+
+  return draftCamPlanSchema.parse({
+    ...plan,
+    operations: plan.operations.map((operation) => ({
+      ...operation,
+      toolpathCandidateIds: toolpathCandidateIdsByOperation.get(operation.id) ?? [],
+    })),
+    toolpathCandidates,
+  });
+}
+
 function withManualPathOverrides(
   existingOperation: Operation | undefined,
   regeneratedOperation: Operation,
@@ -2128,6 +2389,7 @@ function createOperation(
     toolSelectionReason: selection.reason,
     machiningIntent: candidate.machiningIntent,
     depthProfile: buildOperationDepthProfile(feature, selection.tool, candidate),
+    toolpathCandidateIds: [],
     links,
     warnings: candidate.warnings,
     assumptions: candidate.assumptions,
@@ -2364,7 +2626,7 @@ export function planPart(input: PartInput): DraftCamPlan {
   );
   const tools = defaultToolLibrary.tools.filter((tool) => toolIds.has(tool.id));
 
-  return draftCamPlanSchema.parse({
+  return withToolpathCandidates(draftCamPlanSchema.parse({
     part,
     machineProfile: defaultMachineProfile,
     setups: defaultSetups,
@@ -2389,7 +2651,7 @@ export function planPart(input: PartInput): DraftCamPlan {
       'Generated operations are deterministic CAM authoring operations, not production G-code or final toolpaths.',
       'Operation preview is an operation preview layer only. It is not a verified NC tool motion output.',
       'Default tool library and machine profile are foundational examples, not a production tooling catalog.',
-      'No toolpath engine, collision check, or postprocessor is active in this milestone.',
+      'Deterministic toolpath candidates now exist for contour, drill, pocket, and slot operations, but compensation, simulation, collision checking, and postprocessing are still not implemented.',
     ],
     summary: {
       featureCount: features.length,
@@ -2398,7 +2660,7 @@ export function planPart(input: PartInput): DraftCamPlan {
       manualOperationCount: operations.filter((operation) => operation.origin === 'manual').length,
       highestRisk: highestRisk(risks),
     },
-  });
+  }));
 }
 
 export function buildPartInputFromDraftPlan(planInput: DraftCamPlan): PartInput {
@@ -2529,7 +2791,7 @@ export function regenerateDraftPlan(planInput: DraftCamPlan, options: Regenerati
     .map((id) => basePlan.risks.find((risk) => risk.id === id) ?? plan.risks.find((risk) => risk.id === id))
     .filter((risk): risk is Risk => Boolean(risk));
 
-  return draftCamPlanSchema.parse({
+  return withToolpathCandidates(draftCamPlanSchema.parse({
     ...basePlan,
     operations: mergedOperations,
     operationGroups: buildOperationGroups(mergedOperations, basePlan.features),
@@ -2551,12 +2813,12 @@ export function regenerateDraftPlan(planInput: DraftCamPlan, options: Regenerati
       manualOperationCount: mergedOperations.filter((operation) => operation.origin === 'manual').length,
       highestRisk: highestRisk(mergedRisks),
     },
-  });
+  }));
 }
 
 export function approvePlan(request: ApprovalRequest): DraftCamPlan {
   const parsed = approvalRequestSchema.parse(request);
-  return draftCamPlanSchema.parse({
+  return withToolpathCandidates(draftCamPlanSchema.parse({
     ...parsed.plan,
     approval: {
       ...parsed.plan.approval,
@@ -2566,7 +2828,7 @@ export function approvePlan(request: ApprovalRequest): DraftCamPlan {
       approvedAt: new Date().toISOString(),
       notes: parsed.notes ? [...parsed.plan.approval.notes, parsed.notes] : parsed.plan.approval.notes,
     },
-  });
+  }));
 }
 
 export { samplePartInput };

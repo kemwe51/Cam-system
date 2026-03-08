@@ -79,6 +79,7 @@ std::optional<NativeWorkbenchSnapshot> parseSnapshot(const QJsonDocument& docume
     .extractedFeatureCount = metadata.value(QStringLiteral("extractedFeatureCount")).toInt(),
     .operationCount = metadata.value(QStringLiteral("operationCount")).toInt(),
     .toolCount = metadata.value(QStringLiteral("toolCount")).toInt(),
+    .toolpathCandidateCount = metadata.value(QStringLiteral("toolpathCandidateCount")).toInt(),
     .previewCount = metadata.value(QStringLiteral("previewCount")).toInt(),
     .resolvedLinkCount = metadata.value(QStringLiteral("resolvedLinkCount")).toInt(),
     .partialLinkCount = metadata.value(QStringLiteral("partialLinkCount")).toInt(),
@@ -127,6 +128,7 @@ std::optional<NativeWorkbenchSnapshot> parseSnapshot(const QJsonDocument& docume
       .featureNodeId = object.value(QStringLiteral("featureNodeId")).toString(),
       .operationNodeId = object.value(QStringLiteral("operationNodeId")).toString(),
       .toolNodeId = object.value(QStringLiteral("toolNodeId")).toString(),
+      .toolpathNodeId = object.value(QStringLiteral("toolpathNodeId")).toString(),
       .previewNodeId = object.value(QStringLiteral("previewNodeId")).toString(),
       .sourceGeometryIds = readStringArray(object.value(QStringLiteral("sourceGeometryIds")).toArray()),
       .topologyRefs = readTopologyRefs(object.value(QStringLiteral("topologyRefs")).toArray()),
@@ -149,6 +151,7 @@ std::optional<NativeWorkbenchSnapshot> parseSnapshot(const QJsonDocument& docume
       .featureId = object.value(QStringLiteral("featureId")).toString(),
       .operationId = object.value(QStringLiteral("operationId")).toString(),
       .toolId = object.value(QStringLiteral("toolId")).toString(),
+      .toolpathCandidateId = object.value(QStringLiteral("toolpathCandidateId")).toString(),
       .previewId = object.value(QStringLiteral("previewId")).toString(),
       .sourceGeometryIds = readStringArray(object.value(QStringLiteral("sourceGeometryIds")).toArray()),
       .topologyRefs = readTopologyRefs(object.value(QStringLiteral("topologyRefs")).toArray()),
@@ -201,6 +204,7 @@ const NativeWorkbenchSelectionLink* NativeWorkbenchSnapshot::findSelectionLinkFo
         || link.featureNodeId == nodeId
         || link.operationNodeId == nodeId
         || link.toolNodeId == nodeId
+        || link.toolpathNodeId == nodeId
         || link.previewNodeId == nodeId) {
       return &link;
     }
@@ -209,9 +213,10 @@ const NativeWorkbenchSelectionLink* NativeWorkbenchSnapshot::findSelectionLinkFo
 }
 
 QString NativeWorkbenchSnapshot::summaryLine() const {
-  return QStringLiteral("features %1 · operations %2 · tools %3 · link coverage %4/%5/%6")
+  return QStringLiteral("features %1 · operations %2 · toolpaths %3 · tools %4 · link coverage %5/%6/%7")
     .arg(metadata.featureCount)
     .arg(metadata.operationCount)
+    .arg(metadata.toolpathCandidateCount)
     .arg(metadata.toolCount)
     .arg(metadata.resolvedLinkCount)
     .arg(metadata.partialLinkCount)
