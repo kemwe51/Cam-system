@@ -1,8 +1,9 @@
-import type { NormalizedFeature, PartInput } from '@cam/shared';
+import type { DraftCamPlan, NormalizedFeature, Operation, PartInput } from '@cam/shared';
 
-export type ViewOrientation = 'isometric' | 'top' | 'front' | 'fit';
+export type ViewOrientation = 'isometric' | 'top' | 'front' | 'right' | 'fit';
+export type ViewMode = 'shaded' | 'wireframe' | 'stock_only' | 'features' | 'operations';
 
-export type DerivedSceneEntity = {
+export type DerivedBody = {
   featureId: string;
   kind: NormalizedFeature['kind'];
   label: string;
@@ -13,9 +14,35 @@ export type DerivedSceneEntity = {
   color: string;
 };
 
-export type DerivedScene = {
-  stockSize: [number, number, number];
-  entities: DerivedSceneEntity[];
+export type SelectionOverlay = {
+  featureId: string;
+  position: [number, number, number];
+  size: [number, number, number];
+  color: string;
+};
+
+export type OperationOverlay = {
+  operationId: string;
+  featureId: string;
+  label: string;
+  position: [number, number, number];
+  size: [number, number, number];
+  color: string;
+  enabled: boolean;
+  origin: Operation['origin'];
+};
+
+export type ScenePipeline = {
+  stockBody: {
+    size: [number, number, number];
+  };
+  featureBodies: DerivedBody[];
+  selectionOverlay: SelectionOverlay | null;
+  operationOverlays: OperationOverlay[];
+  section: {
+    clippingPlanes: [];
+    readyForSectionPlanes: true;
+  };
   disclaimer: string;
 };
 
@@ -87,14 +114,14 @@ function featureFootprint(part: PartInput, feature: NormalizedFeature): [number,
   }
 }
 
-export function buildDerivedScene(part: PartInput, features: NormalizedFeature[]): DerivedScene {
+function layoutFeatureBodies(part: PartInput, features: NormalizedFeature[]): DerivedBody[] {
   const columns = Math.max(Math.ceil(Math.sqrt(features.length || 1)), 1);
   const rows = Math.max(Math.ceil((features.length || 1) / columns), 1);
   const laneWidth = part.stock.xMm / columns;
   const laneHeight = part.stock.yMm / rows;
   const topZ = part.stock.zMm / 2;
 
-  const entities = features.map((feature, index) => {
+  return features.map((feature, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
     const footprint = featureFootprint(part, feature);
@@ -107,17 +134,74 @@ export function buildDerivedScene(part: PartInput, features: NormalizedFeature[]
       kind: feature.kind,
       label: feature.name,
       text: parseFeatureText(feature),
-      position: [x, y, topZ - depthOffset] as [number, number, number],
+      position: [x, y, topZ - depthOffset],
       size: footprint,
       quantity: feature.quantity,
       color: featureColors[feature.kind] ?? '#94a3b8',
     };
   });
+}
+
+function buildOperationOverlays(
+  featureBodies: DerivedBody[],
+  operations: DraftCamPlan['operations'],
+  selectedOperationId: string | null,
+): OperationOverlay[] {
+  const bodyMap = new Map(featureBodies.map((body) => [body.featureId, body]));
+
+  return operations.map((operation, index) => {
+    const body = bodyMap.get(operation.featureId);
+    const size = body?.size ?? [12, 12, 1.5];
+    const position = body?.position ?? [0, 0, 0];
+    const lift = size[2] / 2 + 1.5 + index * 0.08;
+    return {
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: operation.name,
+      position: [position[0], position[1], position[2] + lift],
+      size: [Math.max(size[0] * 0.88, 4), Math.max(size[1] * 0.88, 4), 0.6],
+      color: selectedOperationId === operation.id
+        ? '#f8fafc'
+        : !operation.enabled
+          ? '#ef4444'
+          : operation.origin === 'manual'
+            ? '#f59e0b'
+            : '#38bdf8',
+      enabled: operation.enabled,
+      origin: operation.origin,
+    };
+  });
+}
+
+export function buildScenePipeline(
+  part: PartInput,
+  features: NormalizedFeature[],
+  operations: DraftCamPlan['operations'],
+  selectedFeatureId: string | null,
+  selectedOperationId: string | null,
+): ScenePipeline {
+  const featureBodies = layoutFeatureBodies(part, features);
+  const selectedBody = featureBodies.find((entity) => entity.featureId === selectedFeatureId) ?? null;
 
   return {
-    stockSize: [part.stock.xMm, part.stock.yMm, part.stock.zMm],
-    entities,
+    stockBody: {
+      size: [part.stock.xMm, part.stock.yMm, part.stock.zMm],
+    },
+    featureBodies,
+    selectionOverlay: selectedBody
+      ? {
+          featureId: selectedBody.featureId,
+          position: selectedBody.position,
+          size: [selectedBody.size[0] + 2.5, selectedBody.size[1] + 2.5, selectedBody.size[2] + 1.5],
+          color: '#f8fafc',
+        }
+      : null,
+    operationOverlays: buildOperationOverlays(featureBodies, operations, selectedOperationId),
+    section: {
+      clippingPlanes: [],
+      readyForSectionPlanes: true,
+    },
     disclaimer:
-      'Derived viewport only: geometry is procedurally arranged from structured JSON input and is not a CAD kernel, STEP import, or verified toolpath.',
+      'Derived viewport only: stock, features, and operation overlays are arranged from structured JSON and draft state. This is not a CAD kernel, STEP/DXF machining pipeline, or verified toolpath preview.',
   };
 }
