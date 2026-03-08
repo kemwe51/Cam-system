@@ -9,6 +9,7 @@
 
 namespace {
 constexpr auto kProjectFilter = "CAM desktop project (*.camproj.json);;JSON files (*.json)";
+constexpr auto kBridgeSnapshotFilter = "Native workbench snapshots (*.json);;All files (*)";
 constexpr auto kStepFilter = "STEP models (*.step *.stp);;All files (*)";
 constexpr auto kDxfFilter = "DXF drawings (*.dxf);;All files (*)";
 }
@@ -76,6 +77,10 @@ QString ProjectFileService::promptOpenProject(QWidget* parent) {
 
 QString ProjectFileService::promptSaveProject(QWidget* parent, const QString& currentPath) {
   return QFileDialog::getSaveFileName(parent, QStringLiteral("Save CAM project"), currentPath, QString::fromUtf8(kProjectFilter));
+}
+
+QString ProjectFileService::promptOpenBridgeSnapshot(QWidget* parent, const QString& currentPath) {
+  return QFileDialog::getOpenFileName(parent, QStringLiteral("Open native workbench snapshot"), currentPath, QString::fromUtf8(kBridgeSnapshotFilter));
 }
 
 QString ProjectFileService::promptImportStep(QWidget* parent) {

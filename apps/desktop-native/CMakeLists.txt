@@ -15,6 +15,8 @@ qt_standard_project_setup()
 qt_add_executable(cam_desktop_native
   src/main.cpp
   src/CamWorkbenchMainWindow.cpp
+  src/NativeWorkbenchSnapshot.cpp
+  src/OcctStepLoader.cpp
   src/ViewportFoundationWidget.cpp
   src/ProjectFileService.cpp
   src/resources.qrc
@@ -25,8 +27,17 @@ target_link_libraries(cam_desktop_native PRIVATE Qt6::Widgets)
 
 if(OpenCASCADE_FOUND)
   target_compile_definitions(cam_desktop_native PRIVATE CAM_DESKTOP_HAS_OCCT=1)
-  if(TARGET OpenCASCADE::TKernel)
-    target_link_libraries(cam_desktop_native PRIVATE OpenCASCADE::TKernel)
+  if(DEFINED OpenCASCADE_INCLUDE_DIR)
+    target_include_directories(cam_desktop_native PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+  endif()
+  if(DEFINED OpenCASCADE_LIBRARIES)
+    target_link_libraries(cam_desktop_native PRIVATE ${OpenCASCADE_LIBRARIES})
+  else()
+    foreach(occt_target IN ITEMS TKernel TKMath TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo TKTopAlgo TKXSBase TKCAF TKXCAF TKCDF TKLCAF TKVCAF TKDESTEP TKService TKV3d TKOpenGl)
+      if(TARGET OpenCASCADE::${occt_target})
+        target_link_libraries(cam_desktop_native PRIVATE OpenCASCADE::${occt_target})
+      endif()
+    endforeach()
   endif()
 endif()
 

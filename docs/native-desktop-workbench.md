@@ -44,25 +44,35 @@ A static layout reference is included at `docs/assets/native-desktop-workbench-l
 
 ### STEP viewer integration foundation
 
-This milestone does **not** fake STEP loading.
+This milestone still does **not** fake finished STEP viewing, but it does add a more concrete and honest native STEP path.
 
 What exists now:
 
 - a Windows-native viewport host area
 - an explicit optional Open CASCADE detection point in CMake
-- a dedicated viewport foundation widget that marks where the following plug in:
-  - STEP file loading
-  - XDE document creation
-  - AIS display-object mapping
-  - viewport navigation commands
-  - selection / highlight synchronization
+- a dedicated viewport foundation widget that now reports:
+  - bridge snapshot status
+  - visibility/display-layer status
+  - current STEP/XDE integration state
+- a native shell flow to attach a `native-workbench-v1` snapshot and populate:
+  - model tree
+  - features
+  - operations
+  - tools
+  - inspector/checklist/warnings metadata
+- an Open CASCADE / XDE loading boundary that can:
+  - accept a STEP file path
+  - load an XDE document with `STEPCAFControl_Reader` in OCCT-enabled builds
+  - extract a native STEP model tree with persistent OCCT label ids
+  - surface unresolved topology-link warnings without claiming finished geometry display
+- display-layer and link-mapping data in the bridge snapshot so the native shell can keep model geometry, operations, and future path-plan overlays separated in a professional desktop workbench
 
 What does **not** exist yet:
 
-- real STEP parsing in the native app
-- real XDE model loading
-- face/edge/solid visualization
-- true selection/highlight on STEP topology
+- final AIS/V3d display-object lifecycle wiring in the viewport
+- finished face/edge/solid viewport visualization and highlight behavior
+- true STEP-to-feature automatic linking from OCCT topology into deterministic feature extraction
+- true selection/highlight on STEP topology inside the viewport
 
 ## Bridge to the current TypeScript CAM stack
 
@@ -87,6 +97,9 @@ The snapshot includes:
 - stable ids for project, source, model entities, features, operations, tools, and previews
 - node collections that map cleanly onto native workbench panels
 - selection-link records for model tree ⇄ features ⇄ operations ⇄ tools ⇄ viewport ⇄ inspector synchronization
+- explicit link mappings with `resolved` / `partial` / `unresolved` status
+- display-layer metadata for model geometry, feature overlays, operation overlays, future path plans, and inspection state
+- topology-reference placeholders that stay honest when only source-geometry linkage exists
 
 `apps/api` now exposes:
 
@@ -142,27 +155,38 @@ Over time, the following may migrate behind a native core boundary if needed:
 The intended Windows development flow is:
 
 ```powershell
-cmake -S apps/desktop-native -B out/desktop-native ^
-  -DCMAKE_PREFIX_PATH="C:/Qt/6.8.2/msvc2022_64"
+cmake --preset windows-msvc-qt
 cmake --build out/desktop-native --config Release
 ```
 
-Optional future Open CASCADE integration should be supplied through CMake package discovery when available.
+For STEP/XDE loading locally:
+
+```powershell
+cmake --preset windows-msvc-qt-occt
+cmake --build out/desktop-native --config Release
+```
+
+Set:
+
+- `CAM_QT_PREFIX=C:/Qt/6.8.2/msvc2022_64`
+- `CAM_OCCT_PREFIX=C:/OpenCASCADE-7.x/install` (or your local OCCT prefix)
 
 ## Honest milestone status
 
 Implemented now:
 
 - native desktop shell path
-- professional dock layout scaffold
-- file workflow scaffold
-- OCCT/STEP integration boundary
-- TypeScript-to-native workbench bridge snapshot
+- professional dock layout refinement
+- file workflow plus bridge-snapshot attach/reload
+- TypeScript-to-native workbench bridge snapshot consumption
+- selection synchronization between native panels
+- visibility-command hooks for future display-object lifecycle control
+- OCCT/XDE STEP loading boundary with native STEP model-tree population in OCCT-enabled builds
 
 Still foundational:
 
-- real STEP loading
-- topology-backed selection
+- AIS/V3d viewport object rendering
+- topology-backed viewport selection
 - native path visualization
 - postprocessing
 - production CAM-core depth

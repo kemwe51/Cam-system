@@ -65,8 +65,9 @@ This milestone moves the repo from a geometry-aware operation-preview foundation
   - local undo/redo for workbench edits
 - **Native Windows CAM workbench foundation**
   - new `apps/desktop-native` Qt Widgets shell with a professional docked CAM layout
-  - main menu, toolbar, keyboard shortcut routing, status bar, recent files, and local `.camproj.json` project shell storage
-  - explicit Open CASCADE / STEP viewer handoff boundary without pretending STEP loading already works
+  - main menu, toolbar, keyboard shortcut routing, status bar, recent files, visibility hooks, and local `.camproj.json` project shell storage
+  - native consumption of `native-workbench-v1` bridge snapshots for model/features/operations/tools tree population and selection synchronization
+  - concrete Open CASCADE / XDE STEP loading boundary that can load STEP document structure in OCCT-enabled Windows builds while still staying honest about unfinished viewport rendering
   - desktop bridge snapshot contracts in `@cam/model` plus `GET /projects/:projectId/native-workbench` for native-shell consumption
 - **Viewport pipeline v4**
   - explicit scene builder layered into imported geometry, stock, extracted features, selection, and operation preview layers
@@ -90,7 +91,7 @@ This milestone moves the repo from a geometry-aware operation-preview foundation
 
 This repository still does **not** implement:
 
-- real STEP parsing or STEP-derived machining
+- TypeScript-side real STEP parsing or STEP-derived machining
 - a B-Rep, solid-model, or CAD kernel
 - verified toolpath generation or machining simulation
 - true 2.5D feature depth extraction from solids or verified section data
@@ -103,8 +104,8 @@ Important honesty boundary:
 - Deterministic path plans are **machining-path candidates for review**, not a final toolpath, postprocessed program, or verified NC motion.
 - Pass-depth plans, lead-in/lead-out hints, clearance/retract levels, and path ordering are **planning hints only**, not final calculated cutter passes or simulation.
 - DXF support is **practical-subset only**, not full DXF support.
-- STEP remains a **workflow-level placeholder only**.
-- the native desktop app is a **real shell foundation**, not yet a finished STEP viewer or production CAM core
+- STEP remains a **workflow-level placeholder** in the TypeScript importers, while the native app now adds a real OCCT/XDE loading path for local Windows builds that have OCCT installed.
+- the native desktop app is a **real professional shell foundation** with bridge-driven tree/selection synchronization, not yet a finished STEP viewer or production CAM core
 - AI review is **advisory only** and never overrides deterministic planning authority.
 
 ## Workspaces
@@ -169,7 +170,7 @@ npm run dev:web -- --host 0.0.0.0
 
 The web app defaults to `http://localhost:3001` for API requests.
 
-The native desktop foundation lives under `apps/desktop-native`. It is intentionally outside the npm build because it uses a Windows-first C++ / Qt toolchain. See `apps/desktop-native/README.md` for the current scope and Windows build prerequisites.
+The native desktop foundation lives under `apps/desktop-native`. It is intentionally outside the npm build because it uses a Windows-first C++ / Qt toolchain. See `apps/desktop-native/README.md` for the current scope, Windows build prerequisites, OCCT notes, and launch flow.
 
 ### Fresh-checkout reliability notes
 

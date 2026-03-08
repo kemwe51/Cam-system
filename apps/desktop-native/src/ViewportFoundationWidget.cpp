@@ -48,7 +48,17 @@ ViewportFoundationWidget::ViewportFoundationWidget(QWidget* parent)
   selectionLabel_->setWordWrap(true);
   frameLayout->addWidget(selectionLabel_);
 
-  auto* controls = new QLabel(QStringLiteral("Command surface reserved for fit / orbit / pan / zoom / isolate / hide / show. Placeholder state is intentional until OCCT integration is wired."), frame);
+  documentStatusLabel_ = new QLabel(QStringLiteral("Document status: awaiting bridge snapshot or STEP/XDE session metadata."), frame);
+  documentStatusLabel_->setStyleSheet(QStringLiteral("color: #cbd5e1;"));
+  documentStatusLabel_->setWordWrap(true);
+  frameLayout->addWidget(documentStatusLabel_);
+
+  displayLegendLabel_ = new QLabel(QStringLiteral("Display layers: model geometry · feature overlays · operation overlays · future path plans"), frame);
+  displayLegendLabel_->setStyleSheet(QStringLiteral("color: #cbd5e1;"));
+  displayLegendLabel_->setWordWrap(true);
+  frameLayout->addWidget(displayLegendLabel_);
+
+  auto* controls = new QLabel(QStringLiteral("Command surface reserved for fit / orbit / pan / zoom / isolate / hide / show. This milestone wires those commands into the native workbench state and OCCT integration boundary without pretending final viewport rendering is complete."), frame);
   controls->setStyleSheet(QStringLiteral("color: #cbd5e1;"));
   controls->setWordWrap(true);
   frameLayout->addWidget(controls);
@@ -70,4 +80,16 @@ void ViewportFoundationWidget::setViewerModeLabel(const QString& value) {
 
 void ViewportFoundationWidget::setSelectionStatus(const QString& value) {
   selectionLabel_->setText(value);
+}
+
+void ViewportFoundationWidget::setIntegrationStatus(const QString& value) {
+  integrationStatusLabel_->setText(value);
+}
+
+void ViewportFoundationWidget::setDisplayLegend(const QString& value) {
+  displayLegendLabel_->setText(value);
+}
+
+void ViewportFoundationWidget::setDocumentStatus(const QString& value) {
+  documentStatusLabel_->setText(value);
 }
