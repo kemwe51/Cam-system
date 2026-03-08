@@ -216,4 +216,33 @@ describe('workbenchReducer', () => {
     const projectRecord = buildProjectRecord(edited);
     expect(projectRecord?.plan.operations.find((entry) => entry.id === operation.id)?.depthProfile?.fieldSources?.targetDepth).toBe('manual_override');
   });
+
+  it('tracks manual path-planning overrides through reducer edits and project persistence', () => {
+    const state = stateWithPlan();
+    const operation = state.draftPlan!.operations.find((entry) => entry.pathProfile?.pathPlans.length)!;
+
+    const edited = workbenchReducer(state, {
+      type: 'updateOperation',
+      operationId: operation.id,
+      changes: {
+        pathProfile: {
+          ...operation.pathProfile!,
+          entryStrategy: 'helical_ramp',
+          fieldSources: {
+            ...operation.pathProfile!.fieldSources,
+            entryStrategy: 'manual_override',
+          },
+        },
+      },
+      message: 'manual path override',
+    });
+
+    const editedOperation = edited.draftPlan!.operations.find((entry) => entry.id === operation.id)!;
+    expect(editedOperation.pathProfile?.entryStrategy).toBe('helical_ramp');
+    expect(editedOperation.pathProfile?.fieldSources?.entryStrategy).toBe('manual_override');
+    expect(editedOperation.source).toBe('edited');
+
+    const projectRecord = buildProjectRecord(edited);
+    expect(projectRecord?.plan.operations.find((entry) => entry.id === operation.id)?.pathProfile?.fieldSources?.entryStrategy).toBe('manual_override');
+  });
 });

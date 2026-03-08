@@ -173,6 +173,9 @@ describe('CAM API server', () => {
     expect(loadedProject.plan.features[0].depthModel.setupPlane.label).toBe('Top setup plane');
     expect(loadedProject.plan.operations[1].depthProfile.targetDepthMm).toBeGreaterThan(0);
     expect(loadedProject.plan.operations.some((operation) => operation.depthProfile?.fieldSources?.targetDepth === 'manual_override')).toBe(true);
+    expect(loadedProject.plan.setups[0].workOffsetDefinition.code).toBe('G54');
+    expect(loadedProject.plan.operations.some((operation) => operation.pathProfile?.pathPlans.length)).toBe(true);
+    expect(loadedProject.plan.operations.some((operation) => operation.pathProfile?.workOffset?.code === 'G54')).toBe(true);
 
     const legacyLoadResponse = await fetch(`${instance.baseUrl}/drafts/${projectId}`);
     expect(legacyLoadResponse.ok).toBe(true);

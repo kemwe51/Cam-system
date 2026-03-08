@@ -11,13 +11,18 @@ import {
 } from '@cam/geometry2d';
 import {
   camReviewSchema,
+  pathPreviewModeSchema,
   draftCamPlanSchema,
   operationDepthProfileSchema,
+  operationPathProfileSchema,
   previewPathSchema,
   selectedEntitySchema,
   type DraftCamPlan,
   type NormalizedFeature,
   type Operation,
+  type OperationPathProfile,
+  type PathPlan,
+  type PathPlanSegment,
   type PreviewPath,
   partInputSchema,
   type PartInput,
@@ -136,6 +141,8 @@ export const operationPreviewSchema = z.object({
   source: z.enum(['generated', 'manual', 'edited']).default('generated'),
   fragmentIds: z.array(z.string().min(1)).default([]),
   paths: z.array(previewPathSchema).default([]),
+  pathPreviewMode: pathPreviewModeSchema.default('summary'),
+  pathProfile: operationPathProfileSchema.optional(),
   depthProfile: operationDepthProfileSchema.optional(),
   depthAnnotations: z.array(z.string().min(1)).default([]),
   warnings: z.array(z.string()).default([]),
@@ -786,12 +793,94 @@ function previewOutline(position: [number, number, number], size: [number, numbe
   ];
 }
 
+function roundNumber(value: number, precision = 2): number {
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+}
+
+function featureTopZ(fragment?: DerivedGeometryFragment, entity?: ModelEntity): number {
+  const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
+  const size = fragment?.size ?? entity?.bounds.size ?? [0, 0, 0];
+  return position[2] + size[2] / 2;
+}
+
+function transformPathPoint(
+  point: [number, number, number],
+  pathPlan: PathPlan,
+  fragment?: DerivedGeometryFragment,
+  entity?: ModelEntity,
+): [number, number, number] {
+  if (pathPlan.coordinateReference === 'setup_top') {
+    return point;
+  }
+
+  const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
+  const size = fragment?.size ?? entity?.bounds.size ?? [8, 8, 1];
+  const topZ = featureTopZ(fragment, entity);
+  return [
+    roundNumber(position[0] + point[0] * Math.max(size[0], 1)),
+    roundNumber(position[1] + point[1] * Math.max(size[1], 1)),
+    roundNumber(topZ + point[2]),
+  ];
+}
+
+function previewSegmentKind(segment: PathPlanSegment, operation: Operation): PreviewPath['segments'][number]['kind'] {
+  if (operation.kind === 'drill') {
+    return segment.motionType === 'plunge_move' ? 'marker' : 'line';
+  }
+  if (operation.kind === 'slot') {
+    return 'centerline';
+  }
+  if (operation.kind === 'pocket' && segment.motionType === 'feed_move' && segment.label?.toLowerCase().includes('lane')) {
+    return 'centerline';
+  }
+  return segment.kind === 'arc' ? 'arc' : 'line';
+}
+
+function pathPlanPreviewPaths(
+  operation: Operation,
+  previewId: string,
+  pathProfile: OperationPathProfile,
+  fragment?: DerivedGeometryFragment,
+  entity?: ModelEntity,
+): PreviewPath[] {
+  return pathProfile.pathPlans.map((pathPlan) =>
+    previewPathSchema.parse({
+      id: `${previewId}-${pathPlan.id}`,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: pathPlan.label,
+      source: operation.origin === 'manual' ? 'manual' : 'generated',
+      segments: pathPlan.segments.map((segment) => {
+        const points = segment.points.map((point) => transformPathPoint(point, pathPlan, fragment, entity));
+        const firstPoint = points[0];
+        const lastPoint = points.at(-1);
+        const closed = Boolean(firstPoint && lastPoint && firstPoint.every((value, index) => value === lastPoint[index]));
+        return {
+          id: `${previewId}-${segment.id}`,
+          kind: previewSegmentKind(segment, operation),
+          points,
+          closed,
+          ...(segment.label ? { label: segment.label } : {}),
+          ...(pathPlan.targetDepthMm !== undefined ? { depthAnnotation: `Z ${pathPlan.targetDepthMm.toFixed(1)} mm` } : {}),
+          motionType: segment.motionType,
+          pathPlanId: pathPlan.id,
+          pathSegmentId: segment.id,
+        };
+      }),
+    }));
+}
+
 function buildPreviewPaths(
   operation: Operation,
   previewId: string,
   fragment?: DerivedGeometryFragment,
   entity?: ModelEntity,
 ): PreviewPath[] {
+  if (operation.pathProfile?.pathPlans.length) {
+    return pathPlanPreviewPaths(operation, previewId, operation.pathProfile, fragment, entity);
+  }
+
   const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
   const size = fragment?.size ?? entity?.bounds.size ?? [8, 8, 1];
   const segments = fragment?.points.length && fragment.points.length >= 2
@@ -889,6 +978,11 @@ export function deriveOperationPreviews(model: ImportedModel, operations: DraftC
         ? ['Manual depth override preserved during regeneration.']
         : []),
       ...(operation.depthProfile?.assumptions.map((assumption) => assumption.label) ?? []),
+      ...(operation.pathProfile?.pathPlans.length
+        ? [`${operation.pathProfile.pathPlans.length} deterministic path candidate plan(s) derived for review.`]
+        : []),
+      ...(operation.pathProfile?.warnings.map((warning) => warning.message) ?? []),
+      ...(operation.pathProfile?.assumptions.map((assumption) => assumption.label) ?? []),
     ];
     return operationPreviewSchema.parse({
       id: previewId,
@@ -900,9 +994,11 @@ export function deriveOperationPreviews(model: ImportedModel, operations: DraftC
       source: operation.source,
       fragmentIds: link?.fragmentIds ?? [],
       paths: buildPreviewPaths(operation, previewId, fragment, entity),
+      pathPreviewMode: operation.pathProfile?.previewMode ?? 'summary',
+      pathProfile: operation.pathProfile,
       depthProfile: operation.depthProfile,
       depthAnnotations,
-      warnings,
+      warnings: [...warnings, ...(operation.pathProfile?.warnings.map((warning) => warning.message) ?? [])],
     });
   });
 }

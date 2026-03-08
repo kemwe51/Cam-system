@@ -56,7 +56,7 @@ export type WorkbenchAction =
   | { type: 'redo'; message: string }
   | { type: 'log'; message: string };
 
-type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId' | 'featureId' | 'depthProfile'>;
+type EditableOperationFields = Pick<Operation, 'name' | 'strategy' | 'setup' | 'setupId' | 'notes' | 'estimatedMinutes' | 'toolId' | 'featureId' | 'depthProfile' | 'pathProfile'>;
 
 export const initialWorkbenchState: WorkbenchState = {
   sample: null,
@@ -224,9 +224,32 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
 
   const setupId = relatedOperation?.setupId ?? plan.setups[0]?.id ?? 'setup-1';
   const setup = relatedOperation?.setup ?? getSetupLabel(plan.setups, setupId);
+  const nextOperationId = operationId('manual', feature.id);
+  const basePathProfile = baseOperation?.pathProfile ?? relatedOperation?.pathProfile;
+  const manualPathProfile = basePathProfile
+    ? {
+        ...basePathProfile,
+        id: `${nextOperationId}-path-profile`,
+        operationId: nextOperationId,
+        featureId: feature.id,
+        pathPlans: basePathProfile.pathPlans.map((pathPlan, planIndex) => {
+          const nextPlanId = `${nextOperationId}-path-${planIndex + 1}`;
+          return {
+            ...pathPlan,
+            id: nextPlanId,
+            operationId: nextOperationId,
+            featureId: feature.id,
+            segments: pathPlan.segments.map((segment, segmentIndex) => ({
+              ...segment,
+              id: `${nextPlanId}-segment-${segmentIndex + 1}`,
+            })),
+          };
+        }),
+      }
+    : undefined;
 
   return {
-    id: operationId('manual', feature.id),
+    id: nextOperationId,
     name: baseOperation ? `${baseOperation.name} copy` : `Manual ${feature.name}`,
     kind: baseOperation?.kind ?? defaultOperationKind(feature),
     featureId: feature.id,
@@ -247,7 +270,7 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
     frozen: true,
     links: baseOperation?.links ?? [{ featureId: feature.id, sourceGeometryRefs: feature.sourceGeometryRefs }],
     warnings: baseOperation?.warnings ?? [],
-    assumptions: baseOperation?.assumptions ?? [],
+      assumptions: baseOperation?.assumptions ?? [],
       machiningIntent: feature.machiningIntent,
       depthProfile: baseOperation?.depthProfile ?? relatedOperation?.depthProfile ?? (feature.depthModel
         ? {
@@ -267,10 +290,11 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
             topReference: 'generated',
           },
           overridePreserved: false,
-          assumptions: feature.depthModel.assumptions,
+      assumptions: feature.depthModel.assumptions,
           warnings: feature.depthModel.warnings,
         }
       : undefined),
+      pathProfile: manualPathProfile,
   };
 }
 
@@ -471,20 +495,32 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         const nextFeatureId = action.changes.featureId ?? operation.featureId;
         const nextSetupId = action.changes.setupId ?? operation.setupId;
         const nextSetup = action.changes.setup ?? getSetupLabel(draftPlan.setups, nextSetupId, operation.setup);
+        const nextSetupDefinition = draftPlan.setups.find((setup) => setup.id === nextSetupId);
 
-          return {
-            ...operation,
-            ...action.changes,
+        return {
+          ...operation,
+          ...action.changes,
           featureId: nextFeatureId,
           setupId: nextSetupId,
           setup: nextSetup,
-            groupId: buildOperationGroupId(nextSetupId, nextFeatureId),
-            toolId: nextToolId,
-            toolName: nextTool?.name ?? operation.toolName,
-            source: editedSource(operation),
-            isDirty: true,
-          };
-        });
+          groupId: buildOperationGroupId(nextSetupId, nextFeatureId),
+          toolId: nextToolId,
+          toolName: nextTool?.name ?? operation.toolName,
+          pathProfile: action.changes.pathProfile
+            ?? (operation.pathProfile
+              ? {
+                  ...operation.pathProfile,
+                  setupId: nextSetupId,
+                  workOffset: nextSetupDefinition?.workOffsetDefinition ?? operation.pathProfile.workOffset,
+                  machineCoordinateReference: nextSetupDefinition?.machineCoordinateReference ?? operation.pathProfile.machineCoordinateReference,
+                  stockReference: nextSetupDefinition?.stockReference ?? operation.pathProfile.stockReference,
+                  clearanceReference: nextSetupDefinition?.clearanceReference ?? operation.pathProfile.clearanceReference,
+                }
+              : operation.pathProfile),
+          source: editedSource(operation),
+          isDirty: true,
+        };
+      });
 
       return appendConsole(
         {

@@ -71,6 +71,32 @@ function bodyOutlinePoints(size: [number, number, number]): Array<[number, numbe
   ];
 }
 
+function motionColor(baseColor: string, motionType: OperationPreview['paths'][number]['segments'][number]['motionType'], selected: boolean): string {
+  if (selected || !motionType) {
+    return baseColor;
+  }
+  switch (motionType) {
+    case 'rapid_move':
+      return '#e2e8f0';
+    case 'feed_move':
+      return '#38bdf8';
+    case 'plunge_move':
+      return '#f97316';
+    case 'retract_move':
+      return '#facc15';
+    default:
+      return baseColor;
+  }
+}
+
+function segmentMidpoint(points: Array<[number, number, number]>): [number, number, number] | null {
+  if (points.length === 0) {
+    return null;
+  }
+  const point = points[Math.floor((points.length - 1) / 2)];
+  return point ?? null;
+}
+
 function EntityMesh({
   entity,
   fragment,
@@ -177,17 +203,38 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
   const firstPath = preview.paths[0];
   const firstSegment = firstPath?.segments[0];
   const firstSegmentPoints = firstSegment?.points ?? [];
+  const allSegments = preview.paths.flatMap((path) => path.segments);
   const depthLabel = preview.depthProfile?.targetDepthMm !== undefined
     ? `Z ${preview.depthProfile.targetDepthMm.toFixed(1)} mm`
     : preview.depthAnnotations[0] ?? '';
 
-  if (preview.kind === 'contour_path' && firstSegmentPoints.length >= 2) {
+  if (preview.pathProfile?.pathPlans.length && allSegments.length > 0) {
     return (
       <group key={preview.id} position={[0, 0, 0]} onClick={select}>
-        <Line points={firstSegmentPoints} color={color} lineWidth={selected ? 3.4 : 2.4} />
+        {allSegments.map((segment) => {
+          const lineColor = motionColor(color, segment.motionType, selected);
+          const midpoint = segmentMidpoint(segment.points);
+          return (
+            <group key={segment.id}>
+              {segment.points.length >= 2 ? (
+                <Line points={segment.points} color={lineColor} lineWidth={selected ? 3.4 : segment.motionType === 'rapid_move' ? 1.5 : 2.5} />
+              ) : null}
+              {segment.motionType === 'plunge_move' && midpoint ? (
+                <Text position={[midpoint[0], midpoint[1], midpoint[2] + 1.1]} fontSize={1.1} color={lineColor} anchorX="center" anchorY="middle">
+                  {segment.label ?? 'plunge'}
+                </Text>
+              ) : null}
+            </group>
+          );
+        })}
         {depthLabel ? (
           <Text position={[position[0], position[1], position[2] + 2]} fontSize={1.6} color={color} anchorX="center" anchorY="middle">
             {depthLabel}
+          </Text>
+        ) : null}
+        {preview.pathProfile.pathPlans[0]?.orderingHint ? (
+          <Text position={[position[0], position[1], position[2] + 3.2]} fontSize={1.1} color={color} anchorX="center" anchorY="middle">
+            {preview.pathProfile.pathPlans[0].orderingHint.mode.replaceAll('_', ' ')}
           </Text>
         ) : null}
       </group>

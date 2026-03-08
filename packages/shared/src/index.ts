@@ -37,6 +37,52 @@ export const workOffsetSchema = z.object({
   code: z.string().min(1),
 });
 
+export const setupOrientationSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  orientation: z.enum(['top', 'front', 'right', 'custom']).default('top'),
+  rotationDegrees: z.object({
+    a: z.number().default(0),
+    b: z.number().default(0),
+    c: z.number().default(0),
+  }).default({
+    a: 0,
+    b: 0,
+    c: 0,
+  }),
+  note: z.string().min(1).optional(),
+});
+
+export const machineCoordinateReferenceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.enum(['machine_zero', 'work_offset_zero', 'stock_top']).default('work_offset_zero'),
+  axesAlignedToSetup: z.boolean().default(true),
+  note: z.string().min(1).optional(),
+});
+
+export const clearanceReferenceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.enum(['safe_clearance', 'retract_plane', 'stock_top']).default('safe_clearance'),
+  zMm: nonNegativeNumber,
+});
+
+export const stockReferenceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  topZMm: z.number(),
+  bottomZMm: z.number().optional(),
+  material: z.string().min(1).optional(),
+});
+
+export const setupWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  severity: z.enum(['low', 'medium', 'high']).default('medium'),
+  reviewRequired: z.boolean().default(true),
+});
+
 export const setupReferenceSchema = z.object({
   setupPlane: setupPlaneSchema,
   workOffset: workOffsetSchema,
@@ -319,6 +365,9 @@ export const previewPathSegmentSchema = z.object({
   closed: z.boolean().default(false),
   label: z.string().min(1).optional(),
   depthAnnotation: z.string().min(1).optional(),
+  motionType: z.enum(['rapid_move', 'feed_move', 'plunge_move', 'retract_move']).optional(),
+  pathPlanId: z.string().min(1).optional(),
+  pathSegmentId: z.string().min(1).optional(),
 });
 
 export const previewPathSchema = z.object({
@@ -329,6 +378,157 @@ export const previewPathSchema = z.object({
   label: z.string().min(1),
   segments: z.array(previewPathSegmentSchema).default([]),
   source: z.enum(['generated', 'manual']).default('generated'),
+});
+
+export const pathMotionTypeSchema = z.enum(['rapid_move', 'feed_move', 'plunge_move', 'retract_move']);
+
+export const entryStrategySchema = z.enum(['direct_plunge', 'linear_ramp', 'helical_ramp', 'pre_drill', 'none']);
+
+export const exitStrategySchema = z.enum(['linear_exit', 'tangent_exit', 'direct_retract', 'none']);
+
+export const clearanceStrategySchema = z.enum(['safe_clearance', 'retract_plane', 'feature_top']);
+
+export const pathDirectionHintSchema = z.enum(['cw', 'ccw', 'climb', 'conventional', 'left_to_right', 'center_out']);
+
+export const pathPreviewModeSchema = z.enum(['summary', 'candidate_segments', 'entry_exit', 'full_path_plan']);
+
+export const pathOrderingHintSchema = z.object({
+  mode: z.enum(['feature_order', 'nearest_neighbor', 'loop_priority', 'pattern_group']),
+  direction: pathDirectionHintSchema.optional(),
+  note: z.string().min(1).optional(),
+});
+
+export const pathPlanWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  severity: z.enum(['low', 'medium', 'high']).default('medium'),
+  reviewRequired: z.boolean().default(true),
+});
+
+export const pathPlanAssumptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  reviewRequired: z.boolean().default(true),
+});
+
+const pathPlanPointSchema = z.tuple([z.number(), z.number(), z.number()]);
+
+const pathPlanSegmentBaseSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1).optional(),
+  motionType: pathMotionTypeSchema,
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+});
+
+export const linearPathSegmentSchema = pathPlanSegmentBaseSchema.extend({
+  kind: z.literal('linear'),
+  points: z.tuple([pathPlanPointSchema, pathPlanPointSchema]),
+});
+
+export const arcPathSegmentSchema = pathPlanSegmentBaseSchema.extend({
+  kind: z.literal('arc'),
+  points: z.array(pathPlanPointSchema).min(2),
+  centerPoint: pathPlanPointSchema,
+  radiusMm: positiveNumber,
+  clockwise: z.boolean(),
+});
+
+export const rapidMoveSchema = linearPathSegmentSchema.extend({
+  motionType: z.literal('rapid_move'),
+});
+
+export const feedMoveSchema = linearPathSegmentSchema.extend({
+  motionType: z.literal('feed_move'),
+});
+
+export const plungeMoveSchema = linearPathSegmentSchema.extend({
+  motionType: z.literal('plunge_move'),
+});
+
+export const retractMoveSchema = linearPathSegmentSchema.extend({
+  motionType: z.literal('retract_move'),
+});
+
+export const pathPlanSegmentSchema = z.union([
+  rapidMoveSchema,
+  feedMoveSchema,
+  plungeMoveSchema,
+  retractMoveSchema,
+  linearPathSegmentSchema,
+  arcPathSegmentSchema,
+]);
+
+export const leadInPlanSchema = z.object({
+  strategy: entryStrategySchema,
+  segmentIds: z.array(z.string().min(1)).default([]),
+  note: z.string().min(1).optional(),
+});
+
+export const leadOutPlanSchema = z.object({
+  strategy: exitStrategySchema,
+  segmentIds: z.array(z.string().min(1)).default([]),
+  note: z.string().min(1).optional(),
+});
+
+export const pathPlanSchema = z.object({
+  id: z.string().min(1),
+  operationId: z.string().min(1),
+  featureId: z.string().min(1),
+  label: z.string().min(1),
+  intent: z.enum(['roughing', 'finishing', 'single_pass', 'drilling', 'slotting']).default('single_pass'),
+  coordinateReference: z.enum(['feature_normalized', 'setup_top']).default('feature_normalized'),
+  sourceGeometryRefs: z.array(z.string().min(1)).default([]),
+  entryStrategy: entryStrategySchema.default('none'),
+  exitStrategy: exitStrategySchema.default('none'),
+  clearanceStrategy: clearanceStrategySchema.default('safe_clearance'),
+  retractStrategy: clearanceStrategySchema.default('safe_clearance'),
+  pathDirectionHint: pathDirectionHintSchema.optional(),
+  orderingHint: pathOrderingHintSchema.optional(),
+  leadIn: leadInPlanSchema.optional(),
+  leadOut: leadOutPlanSchema.optional(),
+  topReferenceZMm: z.number().optional(),
+  targetDepthMm: nonNegativeNumber.optional(),
+  clearanceZMm: nonNegativeNumber.optional(),
+  retractZMm: nonNegativeNumber.optional(),
+  passDepthPlan: passDepthPlanSchema.optional(),
+  segments: z.array(pathPlanSegmentSchema).default([]),
+  warnings: z.array(pathPlanWarningSchema).default([]),
+  assumptions: z.array(pathPlanAssumptionSchema).default([]),
+});
+
+export const pathPlanningFieldSourceSchema = z.enum(['generated', 'assumed', 'manual_override']);
+
+export const pathPlanningFieldStatesSchema = z.object({
+  entryStrategy: pathPlanningFieldSourceSchema.optional(),
+  exitStrategy: pathPlanningFieldSourceSchema.optional(),
+  clearanceStrategy: pathPlanningFieldSourceSchema.optional(),
+  retractStrategy: pathPlanningFieldSourceSchema.optional(),
+  pathDirectionHint: pathPlanningFieldSourceSchema.optional(),
+  pathOrderingHint: pathPlanningFieldSourceSchema.optional(),
+});
+
+export const operationPathProfileSchema = z.object({
+  id: z.string().min(1),
+  operationId: z.string().min(1),
+  featureId: z.string().min(1),
+  previewMode: pathPreviewModeSchema.default('candidate_segments'),
+  setupId: z.string().min(1),
+  workOffset: workOffsetSchema.optional(),
+  machineCoordinateReference: machineCoordinateReferenceSchema.optional(),
+  clearanceReference: clearanceReferenceSchema.optional(),
+  stockReference: stockReferenceSchema.optional(),
+  entryStrategy: entryStrategySchema.default('none'),
+  exitStrategy: exitStrategySchema.default('none'),
+  clearanceStrategy: clearanceStrategySchema.default('safe_clearance'),
+  retractStrategy: clearanceStrategySchema.default('safe_clearance'),
+  pathDirectionHint: pathDirectionHintSchema.optional(),
+  pathOrderingHint: pathOrderingHintSchema.optional(),
+  fieldSources: pathPlanningFieldStatesSchema.default({}),
+  overridePreserved: z.boolean().default(false),
+  pathPlans: z.array(pathPlanSchema).default([]),
+  warnings: z.array(pathPlanWarningSchema).default([]),
+  assumptions: z.array(pathPlanAssumptionSchema).default([]),
 });
 
 export const toolSelectionReasonSchema = z.object({
@@ -450,6 +650,12 @@ export const setupSchema = z.object({
   name: z.string().min(1),
   orientation: z.enum(['top', 'front', 'right', 'custom']).default('top'),
   workOffset: z.string().min(1),
+  orientationDefinition: setupOrientationSchema.optional(),
+  workOffsetDefinition: workOffsetSchema.optional(),
+  machineCoordinateReference: machineCoordinateReferenceSchema.optional(),
+  clearanceReference: clearanceReferenceSchema.optional(),
+  stockReference: stockReferenceSchema.optional(),
+  warnings: z.array(setupWarningSchema).default([]),
   notes: z.array(z.string()).default([]),
 });
 
@@ -491,6 +697,7 @@ export const operationSchema = z.object({
   toolSelectionReason: toolSelectionReasonSchema.optional(),
   machiningIntent: machiningIntentSchema.optional(),
   depthProfile: operationDepthProfileSchema.optional(),
+  pathProfile: operationPathProfileSchema.optional(),
   links: z.array(operationLinkSchema).default([]),
   warnings: z.array(planningWarningSchema).default([]),
   assumptions: z.array(machiningAssumptionSchema).default([]),
@@ -732,6 +939,40 @@ export const defaultSetups = setupSchema.array().parse([
     name: 'Setup 1 / Top side',
     orientation: 'top',
     workOffset: 'G54',
+    orientationDefinition: {
+      id: 'setup-orientation-top',
+      label: 'Top setup orientation',
+      orientation: 'top',
+      rotationDegrees: {
+        a: 0,
+        b: 0,
+        c: 0,
+      },
+      note: 'Initial path-planning foundation assumes the top-side setup only.',
+    },
+    workOffsetDefinition: {
+      id: 'work-offset-g54',
+      label: 'Primary work offset',
+      code: 'G54',
+    },
+    machineCoordinateReference: {
+      id: 'machine-reference-g54',
+      label: 'Primary work offset zero',
+      kind: 'work_offset_zero',
+      axesAlignedToSetup: true,
+      note: 'Foundational setup reference only. No machine simulation or post data is implied.',
+    },
+    clearanceReference: {
+      id: 'setup-1-clearance',
+      label: 'Top setup clearance',
+      kind: 'safe_clearance',
+      zMm: 5,
+    },
+    stockReference: {
+      id: 'setup-1-stock',
+      label: 'Setup 1 stock envelope',
+      topZMm: 0,
+    },
     notes: ['Single-sided foundational setup. Additional setups remain manual workbench authoring for now.'],
   },
 ]);
@@ -891,6 +1132,7 @@ export type GeneratedOperation = z.infer<typeof generatedOperationSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type OperationCandidate = z.infer<typeof operationCandidateSchema>;
 export type OperationDepthProfile = z.infer<typeof operationDepthProfileSchema>;
+export type OperationPathProfile = z.infer<typeof operationPathProfileSchema>;
 export type OperationGroup = z.infer<typeof operationGroupSchema>;
 export type OperationKind = z.infer<typeof operationKindSchema>;
 export type OperationLink = z.infer<typeof operationLinkSchema>;
@@ -899,6 +1141,16 @@ export type PassDepthHint = z.infer<typeof passDepthHintSchema>;
 export type PassDepthPlan = z.infer<typeof passDepthPlanSchema>;
 export type PlanningWarning = z.infer<typeof planningWarningSchema>;
 export type PocketInput = z.infer<typeof pocketSchema>;
+export type PathDirectionHint = z.infer<typeof pathDirectionHintSchema>;
+export type PathMotionType = z.infer<typeof pathMotionTypeSchema>;
+export type PathOrderingHint = z.infer<typeof pathOrderingHintSchema>;
+export type PathPlan = z.infer<typeof pathPlanSchema>;
+export type PathPlanAssumption = z.infer<typeof pathPlanAssumptionSchema>;
+export type PathPlanSegment = z.infer<typeof pathPlanSegmentSchema>;
+export type PathPlanWarning = z.infer<typeof pathPlanWarningSchema>;
+export type PathPlanningFieldSource = z.infer<typeof pathPlanningFieldSourceSchema>;
+export type PathPlanningFieldStates = z.infer<typeof pathPlanningFieldStatesSchema>;
+export type PathPreviewMode = z.infer<typeof pathPreviewModeSchema>;
 export type PreviewPath = z.infer<typeof previewPathSchema>;
 export type PreviewPathSegment = z.infer<typeof previewPathSegmentSchema>;
 export type ProjectDraft = z.infer<typeof projectDraftSchema>;
@@ -910,6 +1162,8 @@ export type RiskLevel = z.infer<typeof riskLevelSchema>;
 export type SafeClearance = z.infer<typeof safeClearanceSchema>;
 export type SelectedEntity = z.infer<typeof selectedEntitySchema>;
 export type Setup = z.infer<typeof setupSchema>;
+export type SetupDefinition = z.infer<typeof setupSchema>;
+export type SetupOrientation = z.infer<typeof setupOrientationSchema>;
 export type SetupPlane = z.infer<typeof setupPlaneSchema>;
 export type SetupReference = z.infer<typeof setupReferenceSchema>;
 export type SlotInput = z.infer<typeof slotSchema>;
@@ -930,5 +1184,20 @@ export type ToolSelectionReason = z.infer<typeof toolSelectionReasonSchema>;
 export type ToolSelectionRule = z.infer<typeof toolSelectionRuleSchema>;
 export type ToolType = z.infer<typeof toolTypeSchema>;
 export type UnknownDepthReason = z.infer<typeof unknownDepthReasonSchema>;
+export type MachineCoordinateReference = z.infer<typeof machineCoordinateReferenceSchema>;
+export type ClearanceReference = z.infer<typeof clearanceReferenceSchema>;
+export type StockReference = z.infer<typeof stockReferenceSchema>;
+export type SetupWarning = z.infer<typeof setupWarningSchema>;
 export type WorkOffset = z.infer<typeof workOffsetSchema>;
 export type ZReference = z.infer<typeof zReferenceSchema>;
+export type LeadInPlan = z.infer<typeof leadInPlanSchema>;
+export type LeadOutPlan = z.infer<typeof leadOutPlanSchema>;
+export type LinearPathSegment = z.infer<typeof linearPathSegmentSchema>;
+export type ArcPathSegment = z.infer<typeof arcPathSegmentSchema>;
+export type RapidMove = z.infer<typeof rapidMoveSchema>;
+export type FeedMove = z.infer<typeof feedMoveSchema>;
+export type PlungeMove = z.infer<typeof plungeMoveSchema>;
+export type RetractMove = z.infer<typeof retractMoveSchema>;
+export type EntryStrategy = z.infer<typeof entryStrategySchema>;
+export type ExitStrategy = z.infer<typeof exitStrategySchema>;
+export type ClearanceStrategy = z.infer<typeof clearanceStrategySchema>;

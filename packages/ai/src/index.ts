@@ -72,6 +72,16 @@ type ReviewContext = {
     overridePreserved?: boolean;
     depthWarnings: string[];
     manualDepthFields: string[];
+    pathWarningCount: number;
+    pathWarnings: string[];
+    manualPathFields: string[];
+    pathPlanCount: number;
+    entryStrategy?: NonNullable<Operation['pathProfile']>['entryStrategy'];
+    exitStrategy?: NonNullable<Operation['pathProfile']>['exitStrategy'];
+    clearanceStrategy?: NonNullable<Operation['pathProfile']>['clearanceStrategy'];
+    retractStrategy?: NonNullable<Operation['pathProfile']>['retractStrategy'];
+    pathOrderingMode?: string;
+    workOffset?: string;
   }>;
   depthContext: {
     assumedFeatureCount: number;
@@ -79,6 +89,12 @@ type ReviewContext = {
     assumedOperationCount: number;
     unknownDepthOperationCount: number;
     preservedOverrideCount: number;
+  };
+  pathContext: {
+    pathPlannedOperationCount: number;
+    manualPathOverrideCount: number;
+    assumedClearanceCount: number;
+    warningCount: number;
   };
 };
 
@@ -101,11 +117,23 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
       manualDepthFields: Object.entries(operation.depthProfile?.fieldSources ?? {})
         .filter((entry) => entry[1] === 'manual_override')
         .map(([field]) => field),
+      pathWarningCount: operation.pathProfile?.warnings.length ?? 0,
+      pathWarnings: operation.pathProfile?.warnings.map((warning) => warning.message) ?? [],
+      manualPathFields: Object.entries(operation.pathProfile?.fieldSources ?? {})
+        .filter((entry) => entry[1] === 'manual_override')
+        .map(([field]) => field),
+      pathPlanCount: operation.pathProfile?.pathPlans.length ?? 0,
       ...(operation.toolClass ? { toolClass: operation.toolClass } : {}),
       ...(operation.toolSelectionReason?.reason ? { toolSelectionReason: operation.toolSelectionReason.reason } : {}),
       ...(operation.depthProfile?.depthStatus ? { depthStatus: operation.depthProfile.depthStatus } : {}),
       ...(operation.depthProfile?.targetDepthMm !== undefined ? { targetDepthMm: operation.depthProfile.targetDepthMm } : {}),
       ...(operation.depthProfile?.overridePreserved ? { overridePreserved: operation.depthProfile.overridePreserved } : {}),
+      ...(operation.pathProfile?.entryStrategy ? { entryStrategy: operation.pathProfile.entryStrategy } : {}),
+      ...(operation.pathProfile?.exitStrategy ? { exitStrategy: operation.pathProfile.exitStrategy } : {}),
+      ...(operation.pathProfile?.clearanceStrategy ? { clearanceStrategy: operation.pathProfile.clearanceStrategy } : {}),
+      ...(operation.pathProfile?.retractStrategy ? { retractStrategy: operation.pathProfile.retractStrategy } : {}),
+      ...(operation.pathProfile?.pathOrderingHint?.mode ? { pathOrderingMode: operation.pathProfile.pathOrderingHint.mode } : {}),
+      ...(operation.pathProfile?.workOffset?.code ? { workOffset: operation.pathProfile.workOffset.code } : {}),
     }));
 
   return {
@@ -159,7 +187,7 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
     warningBuckets: {
       modelSourceWarnings: [...(context.importSession?.warnings ?? []), ...(context.model?.warnings ?? [])],
       planningWarnings: plan.risks.map((risk) => `${risk.level.toUpperCase()}: ${risk.title}`),
-      manualOverrideNotes: manualOverrides.flatMap((operation) => [operation.notes, operation.strategy].filter(Boolean)),
+      manualOverrideNotes: manualOverrides.flatMap((operation) => [operation.notes, operation.strategy, ...operation.pathWarnings].filter(Boolean)),
     },
     manualOverrides,
     depthContext: {
@@ -168,6 +196,12 @@ function reviewContext(plan: DraftCamPlan, context: ReviewSupplementalContext = 
       assumedOperationCount: plan.operations.filter((operation) => operation.depthProfile?.depthStatus === 'assumed').length,
       unknownDepthOperationCount: plan.operations.filter((operation) => operation.depthProfile?.depthStatus === 'unknown').length,
       preservedOverrideCount: plan.operations.filter((operation) => operation.depthProfile?.overridePreserved).length,
+    },
+    pathContext: {
+      pathPlannedOperationCount: plan.operations.filter((operation) => (operation.pathProfile?.pathPlans.length ?? 0) > 0).length,
+      manualPathOverrideCount: manualOverrides.filter((operation) => operation.manualPathFields.length > 0).length,
+      assumedClearanceCount: plan.operations.filter((operation) => operation.pathProfile?.fieldSources.clearanceStrategy === 'assumed' || operation.pathProfile?.fieldSources.retractStrategy === 'assumed').length,
+      warningCount: plan.operations.reduce((sum, operation) => sum + (operation.pathProfile?.warnings.length ?? 0), 0),
     },
   };
 }
@@ -212,6 +246,22 @@ function heuristicReview(plan: DraftCamPlan, context: ReviewSupplementalContext 
 
   if (plan.operations.some((operation) => operation.depthProfile?.overridePreserved)) {
     suggestedEdits.push('Regeneration preserved manual depth overrides. Confirm those overrides still match the updated deterministic feature interpretation.');
+  }
+
+  if (reviewData.pathContext.warningCount > 0) {
+    riskFlags.push(`Path-planning review required for ${reviewData.pathContext.warningCount} warning(s) covering entry, clearance, retract, or conservative path assumptions.`);
+  }
+
+  if (reviewData.pathContext.manualPathOverrideCount > 0) {
+    suggestedEdits.push('Manual path-planning overrides are present. Confirm entry, exit, clearance, retract, and ordering edits still match the regenerated candidate paths.');
+  }
+
+  if (plan.operations.some((operation) => operation.kind === 'drill' && (operation.pathProfile?.pathPlans[0]?.orderingHint?.mode === 'pattern_group'))) {
+    suggestedEdits.push('Grouped drill ordering is heuristic only. Review hole order against clamps, workholding, and chip evacuation needs.');
+  }
+
+  if (plan.operations.some((operation) => operation.kind === 'profile' && operation.pathProfile?.entryStrategy === 'direct_plunge')) {
+    suggestedEdits.push('At least one contour candidate still enters with a direct plunge. Confirm that the entry is acceptable or override it with a ramp/lead-in strategy.');
   }
 
   if (context.model?.status === 'placeholder') {

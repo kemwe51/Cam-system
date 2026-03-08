@@ -15,7 +15,11 @@ import {
   machiningIntentSchema,
   operationCandidateSchema,
   operationDepthProfileSchema,
+  operationPathProfileSchema,
   partInputSchema,
+  pathPlanAssumptionSchema,
+  pathPlanSchema,
+  pathPlanWarningSchema,
   planningWarningSchema,
   samplePartInput,
   type ApprovalRequest,
@@ -29,10 +33,17 @@ import {
   type NormalizedFeature,
   type Operation,
   type OperationDepthProfile,
+  type OperationPathProfile,
   type OperationCandidate,
   type OperationKind,
   type OperationLink,
+  type PathPlan,
+  type PathPlanAssumption,
+  type PathPlanSegment,
+  type PathPlanWarning,
   type PartInput,
+  type PathDirectionHint,
+  type PathOrderingHint,
   type PlanningWarning,
   type Risk,
   type RiskLevel,
@@ -1030,6 +1041,579 @@ function depthTopZMm(profile: OperationDepthProfile | undefined): number {
     ?? 0;
 }
 
+function pathSegment(
+  id: string,
+  motionType: PathPlanSegment['motionType'],
+  start: [number, number, number],
+  end: [number, number, number],
+  label?: string,
+  sourceGeometryRefs: string[] = [],
+): PathPlanSegment {
+  return {
+    id,
+    kind: 'linear',
+    motionType,
+    points: [start, end],
+    ...(label ? { label } : {}),
+    sourceGeometryRefs,
+  };
+}
+
+function loopSegments(
+  planId: string,
+  points: Array<[number, number, number]>,
+  labelPrefix: string,
+  sourceGeometryRefs: string[],
+): PathPlanSegment[] {
+  return points.slice(0, -1).map((point, index) =>
+    pathSegment(
+      `${planId}-feed-${index + 1}`,
+      'feed_move',
+      point,
+      points[index + 1]!,
+      `${labelPrefix} ${index + 1}`,
+      sourceGeometryRefs,
+    ));
+}
+
+function holePatternPoints(feature: NormalizedFeature): Array<[number, number]> {
+  const pattern = feature.notes.find((note) => note.startsWith('Pattern: '))?.replace('Pattern: ', '').trim().toLowerCase() ?? 'custom';
+  if (pattern === 'rectangle' && feature.quantity >= 4) {
+    const rectanglePoints: Array<[number, number]> = [
+      [-0.3, -0.25],
+      [0.3, -0.25],
+      [0.3, 0.25],
+      [-0.3, 0.25],
+    ];
+    return rectanglePoints.slice(0, feature.quantity);
+  }
+  if (pattern === 'polar') {
+    return Array.from({ length: Math.max(feature.quantity, 1) }, (_, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(feature.quantity, 1);
+      return [roundNumber(Math.cos(angle) * 0.32, 3), roundNumber(Math.sin(angle) * 0.32, 3)] as [number, number];
+    });
+  }
+  if (pattern === 'line') {
+    const count = Math.max(feature.quantity, 1);
+    return Array.from({ length: count }, (_, index) => {
+      const x = count === 1 ? 0 : -0.35 + (0.7 * index) / (count - 1);
+      return [roundNumber(x, 3), 0] as [number, number];
+    });
+  }
+  const count = Math.max(feature.quantity, 1);
+  return Array.from({ length: count }, (_, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    return [column === 0 ? -0.22 : 0.22, -0.24 + row * 0.24] as [number, number];
+  });
+}
+
+function planZLevels(profile: OperationDepthProfile | undefined) {
+  return {
+    topZMm: depthTopZMm(profile),
+    targetDepthMm: profile?.targetDepthMm,
+    targetZMm: profile?.targetDepthMm !== undefined ? -roundNumber(profile.targetDepthMm) : undefined,
+    clearanceZMm: profile?.safeClearance?.zMm ?? 5,
+    retractZMm: profile?.retractPlane?.zMm ?? Math.max((profile?.safeClearance?.zMm ?? 5) + 2, 8),
+  };
+}
+
+function buildPathProfileWarnings(feature: NormalizedFeature, operation: Pick<Operation, 'name' | 'kind' | 'depthProfile'>): PathPlanWarning[] {
+  const warnings: PathPlanWarning[] = [];
+
+  if (feature.origin === 'geometry_inferred') {
+    warnings.push(pathPlanWarningSchema.parse({
+      code: 'path_from_inferred_geometry',
+      message: 'Path plan is derived from inferred 2D geometry only. Loop closure, exact cutter engagement, and final NC motion still require review.',
+      severity: 'medium',
+      reviewRequired: true,
+    }));
+  }
+
+  if (operation.depthProfile?.depthStatus === 'assumed' || operation.depthProfile?.depthStatus === 'unknown') {
+    warnings.push(pathPlanWarningSchema.parse({
+      code: 'path_depth_review_required',
+      message: 'Path depth levels include assumed or unknown values. Clearance, target depth, and bottom behavior must be confirmed before release.',
+      severity: operation.depthProfile.depthStatus === 'unknown' ? 'high' : 'medium',
+      reviewRequired: true,
+    }));
+  }
+
+  if (feature.kind === 'contour' && feature.machiningIntent?.classification === 'inside_contour') {
+    warnings.push(pathPlanWarningSchema.parse({
+      code: 'inside_contour_conservative',
+      message: 'Inside contour pathing stays conservative because automatic pocket promotion was not certain.',
+      severity: 'medium',
+      reviewRequired: true,
+    }));
+  }
+
+  if (feature.kind === 'pocket' && operation.name.toLowerCase().includes('rough')) {
+    warnings.push(pathPlanWarningSchema.parse({
+      code: 'pocket_lane_hint_only',
+      message: 'Pocket roughing uses a first-pass lane-based path candidate only. This is not engagement-aware kernel-quality pocketing.',
+      severity: 'low',
+      reviewRequired: true,
+    }));
+  }
+
+  return warnings;
+}
+
+function buildPathProfileAssumptions(feature: NormalizedFeature, operation: Pick<Operation, 'kind' | 'depthProfile'>, tool: Tool): PathPlanAssumption[] {
+  const assumptions: PathPlanAssumption[] = [];
+
+  if (feature.kind === 'hole_group' && feature.depthMm > tool.diameterMm * 3) {
+    assumptions.push(pathPlanAssumptionSchema.parse({
+      id: `${feature.id}-peck-drill-hint`,
+      label: 'Peck drilling may be required',
+      description: 'Hole depth exceeds a simple depth-to-diameter heuristic, so this path plan flags peck drilling as a review hint instead of outputting a canned cycle.',
+      reviewRequired: true,
+    }));
+  }
+
+  if (operation.depthProfile?.bottomReference?.behavior === 'through') {
+    assumptions.push(pathPlanAssumptionSchema.parse({
+      id: `${feature.id}-through-cut-assumed`,
+      label: 'Through-cut exit assumed',
+      description: 'The candidate path plan preserves through-cut intent as a deterministic assumption, not a verified stock break-through simulation.',
+      reviewRequired: true,
+    }));
+  }
+
+  return assumptions;
+}
+
+function buildProfilePathPlans(operation: Operation, feature: NormalizedFeature, pathWarnings: PathPlanWarning[], pathAssumptions: PathPlanAssumption[]): PathPlan[] {
+  const levels = planZLevels(operation.depthProfile);
+  if (levels.targetZMm === undefined) {
+    return [];
+  }
+  const targetZ = levels.targetZMm;
+  const planId = `${operation.id}-path-1`;
+  const roughing = operation.name.toLowerCase().includes('rough');
+  const insideContour = feature.machiningIntent?.classification === 'inside_contour';
+  const x = insideContour ? 0.34 : roughing ? 0.46 : 0.42;
+  const y = insideContour ? 0.24 : roughing ? 0.31 : 0.28;
+  const approachPoint: [number, number, number] = [-x - 0.08, -y, levels.clearanceZMm];
+  const startPoint: [number, number, number] = [-x, -y, targetZ];
+  const contourLoop: Array<[number, number, number]> = [
+    startPoint,
+    [x, -y, targetZ],
+    [x, y, targetZ],
+    [-x, y, targetZ],
+    startPoint,
+  ];
+  const leadOutPoint: [number, number, number] = [-x - 0.08, -y, targetZ];
+  const entryStrategy = roughing ? 'linear_ramp' : 'direct_plunge';
+  const exitStrategy = 'tangent_exit';
+  const entrySegment = roughing
+    ? pathSegment(`${planId}-entry`, 'feed_move', approachPoint, startPoint, 'Lead-in ramp', feature.sourceGeometryRefs)
+    : pathSegment(`${planId}-entry`, 'plunge_move', [-x, -y, levels.clearanceZMm], startPoint, 'Plunge entry', feature.sourceGeometryRefs);
+  const segments: PathPlanSegment[] = [
+    pathSegment(`${planId}-rapid`, 'rapid_move', [-x - 0.14, -y - 0.05, levels.clearanceZMm], approachPoint, 'Rapid approach', feature.sourceGeometryRefs),
+    entrySegment,
+    ...loopSegments(planId, contourLoop, roughing ? 'Rough contour feed' : 'Finish contour feed', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-lead-out`, 'feed_move', startPoint, leadOutPoint, 'Lead-out', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-retract`, 'retract_move', leadOutPoint, [-x - 0.08, -y, levels.retractZMm], 'Retract', feature.sourceGeometryRefs),
+  ];
+
+  return [
+    pathPlanSchema.parse({
+      id: planId,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: roughing ? 'Contour roughing candidate' : 'Contour finishing candidate',
+      intent: roughing ? 'roughing' : 'finishing',
+      coordinateReference: 'feature_normalized',
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      entryStrategy,
+      exitStrategy,
+      clearanceStrategy: 'safe_clearance',
+      retractStrategy: operation.depthProfile?.passDepthPlan?.retractTo === 'retract_plane' ? 'retract_plane' : 'safe_clearance',
+      pathDirectionHint: insideContour ? 'ccw' : 'climb',
+      orderingHint: {
+        mode: 'loop_priority',
+        direction: insideContour ? 'ccw' : 'climb',
+        note: insideContour ? 'Single internal contour candidate kept conservative.' : 'Outside contour stays late in the sequence to preserve part stability.',
+      },
+      leadIn: {
+        strategy: entryStrategy,
+        segmentIds: [entrySegment.id],
+      },
+      leadOut: {
+        strategy: exitStrategy,
+        segmentIds: [`${planId}-lead-out`],
+      },
+      topReferenceZMm: levels.topZMm,
+      targetDepthMm: levels.targetDepthMm,
+      clearanceZMm: levels.clearanceZMm,
+      retractZMm: levels.retractZMm,
+      passDepthPlan: operation.depthProfile?.passDepthPlan,
+      segments,
+      warnings: pathWarnings,
+      assumptions: pathAssumptions,
+    }),
+  ];
+}
+
+function buildPocketPathPlans(operation: Operation, feature: NormalizedFeature, pathWarnings: PathPlanWarning[], pathAssumptions: PathPlanAssumption[]): PathPlan[] {
+  const levels = planZLevels(operation.depthProfile);
+  if (levels.targetZMm === undefined) {
+    return [];
+  }
+  const targetZ = levels.targetZMm;
+  const planId = `${operation.id}-path-1`;
+  const roughing = operation.name.toLowerCase().includes('rough');
+  const laneXs = [-0.35, -0.12, 0.12, 0.35];
+  const segments: PathPlanSegment[] = [
+    pathSegment(`${planId}-rapid`, 'rapid_move', [-0.42, -0.3, levels.clearanceZMm], [laneXs[0]!, -0.3, levels.clearanceZMm], 'Rapid to pocket start', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-entry`, 'plunge_move', [laneXs[0]!, -0.3, levels.clearanceZMm], [laneXs[0]!, -0.3, targetZ], roughing ? 'Pocket plunge' : 'Finish plunge', feature.sourceGeometryRefs),
+  ];
+
+  if (roughing) {
+    laneXs.forEach((laneX, index) => {
+      const startY = index % 2 === 0 ? -0.3 : 0.3;
+      const endY = index % 2 === 0 ? 0.3 : -0.3;
+      segments.push(pathSegment(`${planId}-lane-${index + 1}`, 'feed_move', [laneX, startY, targetZ], [laneX, endY, targetZ], `Pocket lane ${index + 1}`, feature.sourceGeometryRefs));
+      if (laneXs[index + 1] !== undefined) {
+        segments.push(pathSegment(`${planId}-link-${index + 1}`, 'feed_move', [laneX, endY, targetZ], [laneXs[index + 1]!, endY, targetZ], `Lane link ${index + 1}`, feature.sourceGeometryRefs));
+      }
+    });
+  } else {
+    const finishLoop: Array<[number, number, number]> = [
+      [-0.4, -0.3, targetZ],
+      [0.4, -0.3, targetZ],
+      [0.4, 0.3, targetZ],
+      [-0.4, 0.3, targetZ],
+      [-0.4, -0.3, targetZ],
+    ];
+    segments.push(...loopSegments(planId, finishLoop, 'Pocket finish feed', feature.sourceGeometryRefs));
+  }
+
+  const finalPoint = segments.at(-1)?.points[1] ?? [0.35, 0.3, targetZ] as [number, number, number];
+  segments.push(pathSegment(`${planId}-retract`, 'retract_move', finalPoint, [finalPoint[0], finalPoint[1], levels.retractZMm], 'Pocket retract', feature.sourceGeometryRefs));
+
+  return [
+    pathPlanSchema.parse({
+      id: planId,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: roughing ? 'Pocket roughing candidate' : 'Pocket finish candidate',
+      intent: roughing ? 'roughing' : 'finishing',
+      coordinateReference: 'feature_normalized',
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      entryStrategy: 'direct_plunge',
+      exitStrategy: 'direct_retract',
+      clearanceStrategy: 'safe_clearance',
+      retractStrategy: operation.depthProfile?.passDepthPlan?.retractTo === 'retract_plane' ? 'retract_plane' : 'safe_clearance',
+      pathDirectionHint: roughing ? 'left_to_right' : 'climb',
+      orderingHint: {
+        mode: roughing ? 'nearest_neighbor' : 'loop_priority',
+        direction: roughing ? 'left_to_right' : 'climb',
+        note: roughing ? 'First-pass lane order only.' : 'Single finish boundary candidate.',
+      },
+      leadIn: {
+        strategy: 'direct_plunge',
+        segmentIds: [`${planId}-entry`],
+      },
+      leadOut: {
+        strategy: 'direct_retract',
+        segmentIds: [`${planId}-retract`],
+      },
+      topReferenceZMm: levels.topZMm,
+      targetDepthMm: levels.targetDepthMm,
+      clearanceZMm: levels.clearanceZMm,
+      retractZMm: levels.retractZMm,
+      passDepthPlan: operation.depthProfile?.passDepthPlan,
+      segments,
+      warnings: pathWarnings,
+      assumptions: pathAssumptions,
+    }),
+  ];
+}
+
+function buildSlotPathPlans(operation: Operation, feature: NormalizedFeature, pathWarnings: PathPlanWarning[], pathAssumptions: PathPlanAssumption[]): PathPlan[] {
+  const levels = planZLevels(operation.depthProfile);
+  if (levels.targetZMm === undefined) {
+    return [];
+  }
+  const targetZ = levels.targetZMm;
+  const planId = `${operation.id}-path-1`;
+  const start: [number, number, number] = [-0.45, 0, targetZ];
+  const end: [number, number, number] = [0.45, 0, targetZ];
+  const segments: PathPlanSegment[] = [
+    pathSegment(`${planId}-rapid`, 'rapid_move', [-0.5, 0, levels.clearanceZMm], [-0.45, 0, levels.clearanceZMm], 'Rapid to slot start', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-entry`, 'plunge_move', [-0.45, 0, levels.clearanceZMm], start, 'Slot plunge', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-centerline`, 'feed_move', start, end, 'Slot centerline feed', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-finish-return`, 'feed_move', end, start, 'Slot cleanup return', feature.sourceGeometryRefs),
+    pathSegment(`${planId}-retract`, 'retract_move', start, [-0.45, 0, levels.retractZMm], 'Slot retract', feature.sourceGeometryRefs),
+  ];
+
+  return [
+    pathPlanSchema.parse({
+      id: planId,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: 'Slot centerline candidate',
+      intent: 'slotting',
+      coordinateReference: 'feature_normalized',
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      entryStrategy: 'direct_plunge',
+      exitStrategy: 'direct_retract',
+      clearanceStrategy: 'safe_clearance',
+      retractStrategy: 'retract_plane',
+      pathDirectionHint: 'left_to_right',
+      orderingHint: {
+        mode: 'feature_order',
+        direction: 'left_to_right',
+        note: 'Single centerline slot candidate with cleanup return only.',
+      },
+      leadIn: {
+        strategy: 'direct_plunge',
+        segmentIds: [`${planId}-entry`],
+      },
+      leadOut: {
+        strategy: 'direct_retract',
+        segmentIds: [`${planId}-retract`],
+      },
+      topReferenceZMm: levels.topZMm,
+      targetDepthMm: levels.targetDepthMm,
+      clearanceZMm: levels.clearanceZMm,
+      retractZMm: levels.retractZMm,
+      passDepthPlan: operation.depthProfile?.passDepthPlan,
+      segments,
+      warnings: pathWarnings,
+      assumptions: pathAssumptions,
+    }),
+  ];
+}
+
+function buildDrillPathPlans(operation: Operation, feature: NormalizedFeature, pathWarnings: PathPlanWarning[], pathAssumptions: PathPlanAssumption[]): PathPlan[] {
+  const levels = planZLevels(operation.depthProfile);
+  if (levels.targetZMm === undefined) {
+    return [];
+  }
+  const targetZ = levels.targetZMm;
+  const planId = `${operation.id}-path-1`;
+  const holePoints = holePatternPoints(feature);
+  const segments: PathPlanSegment[] = [];
+  holePoints.forEach(([x, y], index) => {
+    segments.push(pathSegment(`${planId}-rapid-${index + 1}`, 'rapid_move', [x, y, levels.retractZMm], [x, y, levels.clearanceZMm], `Hole ${index + 1} rapid`, feature.sourceGeometryRefs));
+    segments.push(pathSegment(`${planId}-drill-${index + 1}`, 'plunge_move', [x, y, levels.clearanceZMm], [x, y, targetZ], `Hole ${index + 1} drill`, feature.sourceGeometryRefs));
+    segments.push(pathSegment(`${planId}-retract-${index + 1}`, 'retract_move', [x, y, targetZ], [x, y, levels.retractZMm], `Hole ${index + 1} retract`, feature.sourceGeometryRefs));
+  });
+
+  return [
+    pathPlanSchema.parse({
+      id: planId,
+      operationId: operation.id,
+      featureId: operation.featureId,
+      label: 'Grouped drill candidate',
+      intent: 'drilling',
+      coordinateReference: 'feature_normalized',
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      entryStrategy: 'direct_plunge',
+      exitStrategy: 'direct_retract',
+      clearanceStrategy: 'safe_clearance',
+      retractStrategy: 'retract_plane',
+      pathDirectionHint: 'left_to_right',
+      orderingHint: {
+        mode: 'pattern_group',
+        direction: 'left_to_right',
+        note: `Hole order follows the inferred ${feature.notes.find((note) => note.startsWith('Pattern: '))?.replace('Pattern: ', '').toLowerCase() ?? 'custom'} group pattern.`,
+      },
+      leadIn: {
+        strategy: 'direct_plunge',
+        segmentIds: holePoints.map((_, index) => `${planId}-drill-${index + 1}`),
+      },
+      leadOut: {
+        strategy: 'direct_retract',
+        segmentIds: holePoints.map((_, index) => `${planId}-retract-${index + 1}`),
+      },
+      topReferenceZMm: levels.topZMm,
+      targetDepthMm: levels.targetDepthMm,
+      clearanceZMm: levels.clearanceZMm,
+      retractZMm: levels.retractZMm,
+      passDepthPlan: operation.depthProfile?.passDepthPlan,
+      segments,
+      warnings: pathWarnings,
+      assumptions: pathAssumptions,
+    }),
+  ];
+}
+
+function buildOperationPathProfile(operation: Operation, feature: NormalizedFeature, tool: Tool): OperationPathProfile | undefined {
+  if (!operation.depthProfile) {
+    return undefined;
+  }
+
+  const setup = defaultSetups.find((candidate) => candidate.id === operation.setupId) ?? defaultSetups[0];
+  if (!setup) {
+    return undefined;
+  }
+
+  const pathWarnings = buildPathProfileWarnings(feature, operation);
+  const pathAssumptions = buildPathProfileAssumptions(feature, operation, tool);
+  const pathPlans = operation.kind === 'profile'
+    ? buildProfilePathPlans(operation, feature, pathWarnings, pathAssumptions)
+    : operation.kind === 'pocket'
+      ? buildPocketPathPlans(operation, feature, pathWarnings, pathAssumptions)
+      : operation.kind === 'slot'
+        ? buildSlotPathPlans(operation, feature, pathWarnings, pathAssumptions)
+        : operation.kind === 'drill'
+          ? buildDrillPathPlans(operation, feature, pathWarnings, pathAssumptions)
+          : [];
+
+  if (pathPlans.length === 0) {
+    return undefined;
+  }
+
+  return operationPathProfileSchema.parse({
+    id: `${operation.id}-path-profile`,
+    operationId: operation.id,
+    featureId: operation.featureId,
+    previewMode: 'full_path_plan',
+    setupId: operation.setupId,
+    workOffset: setup.workOffsetDefinition ?? {
+      id: `${setup.id}-work-offset`,
+      label: `Work offset ${setup.workOffset}`,
+      code: setup.workOffset,
+    },
+    machineCoordinateReference: setup.machineCoordinateReference,
+    clearanceReference: setup.clearanceReference ?? (operation.depthProfile.safeClearance
+      ? {
+          id: `${operation.id}-clearance-reference`,
+          label: 'Operation clearance reference',
+          kind: 'safe_clearance',
+          zMm: operation.depthProfile.safeClearance.zMm,
+        }
+      : undefined),
+    stockReference: setup.stockReference ?? {
+      id: `${operation.id}-stock-reference`,
+      label: `${operation.setup} stock reference`,
+      topZMm: depthTopZMm(operation.depthProfile),
+      ...(operation.depthProfile.stockBottom?.zMm !== undefined ? { bottomZMm: operation.depthProfile.stockBottom.zMm } : {}),
+      material: operation.depthProfile.stockTop ? undefined : undefined,
+    },
+    entryStrategy: pathPlans[0]?.entryStrategy ?? 'none',
+    exitStrategy: pathPlans[0]?.exitStrategy ?? 'none',
+    clearanceStrategy: pathPlans[0]?.clearanceStrategy ?? 'safe_clearance',
+    retractStrategy: pathPlans[0]?.retractStrategy ?? 'safe_clearance',
+    pathDirectionHint: pathPlans[0]?.pathDirectionHint,
+    pathOrderingHint: pathPlans[0]?.orderingHint,
+    fieldSources: {
+      entryStrategy: 'generated',
+      exitStrategy: 'generated',
+      clearanceStrategy: 'generated',
+      retractStrategy: operation.depthProfile.passDepthPlan?.retractTo === 'retract_plane' ? 'assumed' : 'generated',
+      ...(pathPlans[0]?.pathDirectionHint ? { pathDirectionHint: 'generated' } : {}),
+      ...(pathPlans[0]?.orderingHint ? { pathOrderingHint: 'generated' } : {}),
+    },
+    pathPlans,
+    warnings: pathWarnings,
+    assumptions: pathAssumptions,
+  });
+}
+
+function withManualPathOverrides(
+  existingOperation: Operation | undefined,
+  regeneratedOperation: Operation,
+): Operation {
+  if (!existingOperation?.pathProfile || !regeneratedOperation.pathProfile) {
+    return regeneratedOperation;
+  }
+
+  const fieldSources = existingOperation.pathProfile.fieldSources ?? {};
+  const manualFields = Object.entries(fieldSources)
+    .filter((entry): entry is [keyof typeof fieldSources, 'manual_override'] => entry[1] === 'manual_override')
+    .map(([field]) => field);
+
+  if (manualFields.length === 0) {
+    return regeneratedOperation;
+  }
+
+  const preservedProfile: OperationPathProfile = {
+    ...regeneratedOperation.pathProfile,
+    fieldSources: {
+      ...regeneratedOperation.pathProfile.fieldSources,
+    },
+    warnings: [...regeneratedOperation.pathProfile.warnings],
+    assumptions: [...regeneratedOperation.pathProfile.assumptions],
+    overridePreserved: true,
+  };
+
+  if (manualFields.includes('entryStrategy')) {
+    preservedProfile.entryStrategy = existingOperation.pathProfile.entryStrategy;
+    preservedProfile.fieldSources.entryStrategy = 'manual_override';
+  }
+  if (manualFields.includes('exitStrategy')) {
+    preservedProfile.exitStrategy = existingOperation.pathProfile.exitStrategy;
+    preservedProfile.fieldSources.exitStrategy = 'manual_override';
+  }
+  if (manualFields.includes('clearanceStrategy')) {
+    preservedProfile.clearanceStrategy = existingOperation.pathProfile.clearanceStrategy;
+    preservedProfile.fieldSources.clearanceStrategy = 'manual_override';
+  }
+  if (manualFields.includes('retractStrategy')) {
+    preservedProfile.retractStrategy = existingOperation.pathProfile.retractStrategy;
+    preservedProfile.fieldSources.retractStrategy = 'manual_override';
+  }
+  if (manualFields.includes('pathDirectionHint') && existingOperation.pathProfile.pathDirectionHint) {
+    preservedProfile.pathDirectionHint = existingOperation.pathProfile.pathDirectionHint;
+    preservedProfile.fieldSources.pathDirectionHint = 'manual_override';
+  }
+  if (manualFields.includes('pathOrderingHint') && existingOperation.pathProfile.pathOrderingHint) {
+    preservedProfile.pathOrderingHint = existingOperation.pathProfile.pathOrderingHint;
+    preservedProfile.fieldSources.pathOrderingHint = 'manual_override';
+  }
+
+  preservedProfile.pathPlans = preservedProfile.pathPlans.map((pathPlan) => ({
+    ...pathPlan,
+    entryStrategy: preservedProfile.entryStrategy,
+    exitStrategy: preservedProfile.exitStrategy,
+    clearanceStrategy: preservedProfile.clearanceStrategy,
+    retractStrategy: preservedProfile.retractStrategy,
+    pathDirectionHint: preservedProfile.pathDirectionHint,
+    orderingHint: preservedProfile.pathOrderingHint ?? pathPlan.orderingHint,
+    topReferenceZMm: depthTopZMm(regeneratedOperation.depthProfile),
+    targetDepthMm: regeneratedOperation.depthProfile?.targetDepthMm,
+    clearanceZMm: regeneratedOperation.depthProfile?.safeClearance?.zMm ?? pathPlan.clearanceZMm,
+    retractZMm: regeneratedOperation.depthProfile?.retractPlane?.zMm ?? pathPlan.retractZMm,
+    passDepthPlan: regeneratedOperation.depthProfile?.passDepthPlan,
+  }));
+
+  preservedProfile.assumptions = uniqueStrings([
+    ...preservedProfile.assumptions.map((assumption) => assumption.id),
+    `${regeneratedOperation.id}-preserved-manual-path`,
+  ]).map((id) => {
+    if (id !== `${regeneratedOperation.id}-preserved-manual-path`) {
+      return preservedProfile.assumptions.find((assumption) => assumption.id === id)!;
+    }
+    return pathPlanAssumptionSchema.parse({
+      id,
+      label: 'Manual path-planning override preserved',
+      description: 'Regeneration recomputed deterministic path candidates while preserving manually edited path-planning hints for entry, exit, clearance, retract, or ordering.',
+      reviewRequired: true,
+    });
+  });
+  preservedProfile.warnings = [
+    ...preservedProfile.warnings,
+    pathPlanWarningSchema.parse({
+      code: 'manual_path_override_preserved',
+      message: 'Manual path-planning overrides were preserved during regeneration. Confirm the regenerated candidate path still matches the programmer intent.',
+      severity: 'medium',
+      reviewRequired: true,
+    }),
+  ];
+
+  return {
+    ...regeneratedOperation,
+    source: 'edited',
+    pathProfile: operationPathProfileSchema.parse(preservedProfile),
+  };
+}
+
 function withManualDepthOverride(
   existingOperation: Operation | undefined,
   regeneratedOperation: Operation,
@@ -1521,7 +2105,7 @@ function createOperation(
       sourceGeometryRefs: feature.sourceGeometryRefs,
     },
   ];
-  return {
+  const operation: Operation = {
     id: candidate.id,
     name: candidate.name,
     kind: candidate.kind,
@@ -1547,6 +2131,10 @@ function createOperation(
     links,
     warnings: candidate.warnings,
     assumptions: candidate.assumptions,
+  };
+  return {
+    ...operation,
+    pathProfile: buildOperationPathProfile(operation, feature, selection.tool),
   };
 }
 
@@ -1918,7 +2506,10 @@ export function regenerateDraftPlan(planInput: DraftCamPlan, options: Regenerati
     .filter((operation) => (
       !selectedFeatureIds || selectedFeatureIds.has(operation.featureId)
     ))
-    .map((operation) => withManualDepthOverride(existingOperationsById.get(operation.id), operation));
+    .map((operation) => withManualPathOverrides(
+      existingOperationsById.get(operation.id),
+      withManualDepthOverride(existingOperationsById.get(operation.id), operation),
+    ));
 
   const mergedOperations = [...preservedExistingOperations, ...regeneratedOperations]
     .sort((left, right) => {

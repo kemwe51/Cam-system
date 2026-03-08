@@ -159,6 +159,23 @@ describe('planPart', () => {
     expect(pocketOperation?.depthProfile?.passDepthPlan?.finishPass).toBe('wall_and_floor');
   });
 
+  it('builds deterministic contour, drill, pocket, and slot path candidates with setup metadata', () => {
+    const plan = planPart(samplePartInput);
+    const contourOperation = plan.operations.find((operation) => operation.kind === 'profile' && operation.name.includes('Rough'))!;
+    const drillOperation = plan.operations.find((operation) => operation.kind === 'drill')!;
+    const pocketOperation = plan.operations.find((operation) => operation.kind === 'pocket' && operation.name.includes('Rough'))!;
+    const slotOperation = plan.operations.find((operation) => operation.kind === 'slot')!;
+
+    expect(contourOperation.pathProfile?.pathPlans[0]?.entryStrategy).toBe('linear_ramp');
+    expect(contourOperation.pathProfile?.pathPlans[0]?.segments.some((segment) => segment.motionType === 'feed_move')).toBe(true);
+    expect(drillOperation.pathProfile?.pathPlans[0]?.segments.filter((segment) => segment.motionType === 'plunge_move')).toHaveLength(samplePartInput.holeGroups[0]!.count);
+    expect(drillOperation.pathProfile?.pathPlans[0]?.orderingHint?.mode).toBe('pattern_group');
+    expect(pocketOperation.pathProfile?.pathPlans[0]?.segments.some((segment) => segment.label?.includes('Pocket lane'))).toBe(true);
+    expect(slotOperation.pathProfile?.pathPlans[0]?.label).toContain('Slot');
+    expect(slotOperation.pathProfile?.workOffset?.code).toBe('G54');
+    expect(slotOperation.pathProfile?.machineCoordinateReference?.kind).toBe('work_offset_zero');
+  });
+
   it('marks approved plans with reviewer information', () => {
     const approved = approvePlan({
       plan: planPart(samplePartInput),
@@ -316,5 +333,47 @@ EOF`;
     expect(regeneratedOperation.depthProfile?.fieldSources?.targetDepth).toBe('manual_override');
     expect(regeneratedOperation.depthProfile?.overridePreserved).toBe(true);
     expect(regeneratedOperation.source).toBe('edited');
+  });
+
+  it('preserves manual path-planning overrides on regenerated operations', () => {
+    const plan = planPart(samplePartInput);
+    const operation = plan.operations.find((entry) => entry.kind === 'profile' && entry.name.includes('Finish'))!;
+    const updatedPlan = {
+      ...plan,
+      operations: plan.operations.map((entry) => entry.id === operation.id
+        ? {
+            ...entry,
+            source: 'edited' as const,
+            pathProfile: {
+              ...entry.pathProfile!,
+              entryStrategy: 'helical_ramp' as const,
+              clearanceStrategy: 'retract_plane' as const,
+              pathOrderingHint: {
+                mode: 'nearest_neighbor' as const,
+                direction: 'ccw' as const,
+                note: 'Programmer override',
+              },
+              fieldSources: {
+                ...entry.pathProfile!.fieldSources,
+                entryStrategy: 'manual_override' as const,
+                clearanceStrategy: 'manual_override' as const,
+                pathOrderingHint: 'manual_override' as const,
+              },
+            },
+          }
+        : entry),
+    };
+
+    const regenerated = regenerateDraftPlan(updatedPlan, {
+      selectedFeatureIds: [operation.featureId],
+      preserveFrozenEdited: true,
+    });
+    const regeneratedOperation = regenerated.operations.find((entry) => entry.id === operation.id)!;
+
+    expect(regeneratedOperation.pathProfile?.entryStrategy).toBe('helical_ramp');
+    expect(regeneratedOperation.pathProfile?.clearanceStrategy).toBe('retract_plane');
+    expect(regeneratedOperation.pathProfile?.pathOrderingHint?.mode).toBe('nearest_neighbor');
+    expect(regeneratedOperation.pathProfile?.overridePreserved).toBe(true);
+    expect(regeneratedOperation.pathProfile?.warnings.some((warning) => warning.code === 'manual_path_override_preserved')).toBe(true);
   });
 });

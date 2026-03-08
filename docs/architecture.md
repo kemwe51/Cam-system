@@ -19,7 +19,7 @@ The deterministic engine owns:
 - feature normalization
 - operation proposals
 - tool and setup references
-- depth-aware operation profiles, pass-depth planning hints, and deterministic preservation of manual depth overrides
+- depth-aware operation profiles, pass-depth planning hints, deterministic path-plan candidates, and deterministic preservation of manual depth/path overrides
 - risk creation
 - checklist creation
 - cycle time estimation
@@ -31,12 +31,12 @@ The model/import pipeline owns:
 - derived model/session contracts
 - source/model/view entity ids
 - feature-to-geometry links
-- operation preview contracts
+- operation preview contracts and path-plan-aware viewport derivation
 - project/import/revision persistence records
 
-The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
+The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output final toolpaths, or generate G-code.
 
-## CAM Operations v6
+## Initial Path Planning Layer v7
 
 `@cam/geometry2d` is now the internal contract boundary for imported planar source data.
 
@@ -72,6 +72,9 @@ Current model vocabulary includes:
 - `DerivedGeometryFragment`
 - `FeatureGeometryLink`
 - `OperationPreview`
+- `OperationPathProfile`
+- `PathPlan`
+- `PathPlanSegment`
 - `PreviewPath`
 - `ViewPreset`
 - `ViewMode`
@@ -132,6 +135,9 @@ Saved projects now track:
 - updated at
 - warnings
 - lightweight revision history
+- setup/work-offset metadata
+- operation path profiles and path-plan warnings/assumptions
+- manual path-planning overrides preserved across regeneration
 
 This is still intentionally simple. The repo does not yet implement multi-user locking, branch/merge semantics, or immutable artifact promotion.
 
@@ -155,6 +161,7 @@ Manual programming still remains practical and reducer-driven:
 - reorder operations
 - relink operation to a different feature
 - freeze edited/manual operations before regeneration
+- edit review-safe path-planning fields such as entry, exit, clearance, retract, direction, and ordering hints
 - regenerate generated operations from the full draft or a selected feature
 - local undo/redo
 
@@ -178,21 +185,21 @@ The viewport scene builder now consumes `@cam/model` types and separates:
 - stock layer
 - extracted feature layer
 - selection layer
-- operation preview layer
+- operation preview / path-planning layer
 
-Operation previews are intentionally honest overlays only:
+Operation previews and path-planning overlays are intentionally honest:
 
-- contour/profile → contour path markers
-- pocket/face/slot → region overlays
-- drill → point/cylinder markers
+- contour/profile → deterministic contour path candidates with lead-in/lead-out and rapid/feed/retract distinctions
+- pocket/face/slot → region overlays plus lane/centerline path candidates where available
+- drill → grouped hole ordering markers plus rapid/plunge/retract path candidates
 - chamfer → edge markers
 - engrave → text markers
 - unlinked/manual cases → generic preview badge
-- depth labels and layered pass hints → preview-only annotations, not final cutter path motion
+- depth labels, pass hints, clearance/retract levels, and ordering hints → review-only annotations, not final cutter path motion
 
-These are **not** toolpaths. Imported geometry remains 2D interpretation only, optional stock thickness is derived planning context only, and any simple extrusion/context rendering is advisory rather than a solid model.
+These are **not** final toolpaths. Imported geometry remains 2D interpretation only, optional stock thickness is derived planning context only, and any simple extrusion/context rendering is advisory rather than a solid model.
 
-CAM Operations v6 generated subset:
+Initial Path Planning Layer v7 generated subset:
 
 - outside contour rough + finish operations
 - conservative inside contour operations
@@ -201,6 +208,7 @@ CAM Operations v6 generated subset:
 - grouped drilling operations from inferred circle patterns
 - marking-only engraving operations
 - depth-aware target depth, bottom behavior, retract, and pass-plan hints for generated operations
+- first deterministic contour / drill / pocket / slot path candidates with setup, work-offset, clearance, retract, and ordering metadata
 
 ## Current boundaries
 
@@ -210,7 +218,7 @@ This repository does not yet implement:
 - a geometry kernel or B-Rep modeler
 - machine simulation
 - collision checking
-- true toolpath planning
+- true cutter-engagement-aware toolpath planning
 - postprocessors or G-code output
 - production-grade tool assemblies and cutting data
 

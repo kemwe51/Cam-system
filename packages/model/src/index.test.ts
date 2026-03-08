@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildGeometryGraph, parseDxfGeometry2D } from '@cam/geometry2d';
-import { extractGeometryFeatures } from '@cam/engine';
+import { extractGeometryFeatures, planPart } from '@cam/engine';
 import { samplePartInput } from '@cam/shared';
 import { createModelSource, deriveImportedModelFromGeometry, deriveImportedModelFromPart, deriveOperationPreviews } from './index.js';
 
@@ -215,5 +215,22 @@ describe('@cam/model', () => {
     expect(model.geometryGraph?.closedProfileIds.length).toBeGreaterThan(0);
     expect(model.extractedFeatures.some((feature) => feature.kind === 'outside_contour')).toBe(true);
     expect(model.featureGeometryLinks.some((link) => link.sourceGeometryIds.length > 0)).toBe(true);
+  });
+
+  it('derives path-plan-aware previews from generated operations', () => {
+    const source = createModelSource({
+      id: 'import-json-sample',
+      type: 'json',
+      filename: 'sample.json',
+      mediaType: 'application/json',
+    });
+    const model = deriveImportedModelFromPart(source, samplePartInput);
+    const plan = planPart(samplePartInput);
+    const contourPreview = deriveOperationPreviews(model, plan.operations).find((preview) => preview.kind === 'contour_path')!;
+
+    expect(contourPreview.pathPreviewMode).toBe('full_path_plan');
+    expect(contourPreview.pathProfile?.pathPlans.length).toBeGreaterThan(0);
+    expect(contourPreview.paths[0]?.segments.some((segment) => segment.motionType === 'rapid_move')).toBe(true);
+    expect(contourPreview.depthAnnotations.some((annotation) => annotation.includes('deterministic path candidate'))).toBe(true);
   });
 });
