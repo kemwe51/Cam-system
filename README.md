@@ -2,7 +2,7 @@
 
 Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop CAM workflow focused on 2D and 2.5D milling.
 
-## CAM Operations v5
+## CAM Operations v6
 
 This milestone moves the repo from a geometry-aware authoring foundation into a first real deterministic CAM-authoring layer for imported 2D geometry while staying explicit about what is still preview-only, review-required, or not implemented yet.
 
@@ -16,7 +16,7 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - explicit imported geometry, extracted feature, and operation-preview modeling on top of the existing `ImportedModel` / `ModelEntity` / `ModelView` contracts
   - stable ids for source geometry, extracted features, plan features, and previews so mappings remain durable across import → plan → review
   - viewport fragments now distinguish raw imported geometry, extracted feature overlays, and operation preview overlays
-- **CAM Operations v5 deterministic planning**
+- **CAM Operations v6 deterministic planning**
   - outside contour rough + finish generation where outer profile intent is clear
   - conservative inside contour, pocket, slot, and grouped-hole generation from extracted 2D geometry
   - generated/manual/edited operation source tracking with freeze-for-regeneration support
@@ -25,10 +25,14 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - workspace libraries now expose a `source` condition for local app/test work while keeping `dist/` outputs for package builds and packaged consumers
   - the web app resolves `@cam/*` libraries to `src/index.ts` in Vite dev, Vitest, `tsc -b`, and `vite build`, so `npm run build --workspace @cam/web` works from a clean checkout
   - API `tsx` dev runtime uses Node `--conditions=source`, so sibling package `dist/` artifacts are no longer a hidden prerequisite
-- **2.5D depth foundation**
-  - shared schemas now include `SetupPlane`, `ZReference`, `DepthRange`, `MachiningLevel`, `FeatureDepthModel`, `OperationDepthProfile`, `StockTop`, `FloorLevel`, `PassDepthHint`, `SafeClearance`, `DepthAssumption`, and `DepthWarning`
-  - deterministic plans now attach depth metadata, assumptions, and warnings to normalized features and operations where depth is known or inferred
-  - previews can expose depth annotations, but they still do not claim verified tool motion or 3D toolpaths
+- **2.5D depth-aware planning**
+  - shared schemas now include `SetupPlane`, `SetupReference`, `WorkOffset`, `ZReference`, `DepthRange`, `FeatureDepthModel`, `RegionDepthModel`, `HoleDepthModel`, `OperationDepthProfile`, `StockTop`, `StockBottom`, `TopReference`, `BottomReference`, `PassDepthHint`, `PassDepthPlan`, `SafeClearance`, `RetractPlane`, `DepthAssumption`, `DepthWarning`, and `UnknownDepthReason`
+  - deterministic plans now keep depth state explicit as known / assumed / unknown and attach bottom-behavior, retract, and pass-plan hints without claiming final toolpath certainty
+  - previews can expose depth annotations, layered pass hints, and preserved-override warnings, but they still do not claim verified tool motion or 3D toolpaths
+- **Tool classes and deterministic tooling rules**
+  - tool classes now distinguish `contour_end_mill`, `pocket_end_mill`, `small_slot_end_mill`, `drill`, `chamfer_tool`, and `engraving_tool` in addition to the foundational face mill
+  - generated operations now record deterministic tool selection rule ids, reasons, and weak-match warnings for review
+  - the foundational tool library now includes holder summaries and a small slot end mill for narrow-slot planning
 - **Importer workflow v4**
   - real JSON importer returning structured source metadata, warnings, imported model data, and deterministic part input when available
   - real DXF importer for a practical planar subset with explicit unsupported-entity warnings
@@ -82,6 +86,7 @@ Important honesty boundary:
 
 - The viewport is a **derived visualization from imported geometry, extracted feature overlays, structured JSON, and deterministic plan state**.
 - Operation preview is an **operation preview**, not a toolpath or final NC motion.
+- Pass-depth plans and layered machining previews are **planning hints only**, not final calculated cutter passes or simulation.
 - DXF support is **practical-subset only**, not full DXF support.
 - STEP remains a **workflow-level placeholder only**.
 - AI review is **advisory only** and never overrides deterministic planning authority.
@@ -236,6 +241,16 @@ Saved project records now include:
 - updated at
 - warnings
 - lightweight revision history
+- depth-aware feature and operation metadata
+- tool-class selection reasons and weak-match warnings
+- manual depth override state that can be preserved through regeneration
+
+### Depth overrides and regeneration
+
+- Manual edits to operation depth fields such as target depth, top reference, through/blind behavior, safe clearance, and retract plane are stored on the operation depth profile.
+- Each editable depth field shows whether it is currently generated, assumed, or a manual override.
+- Regeneration still rebuilds deterministic operations from current feature state, but matching generated operations keep programmer depth overrides when those fields were explicitly marked as manual overrides.
+- When a preserved manual override conflicts with regenerated deterministic depth, the operation remains review-required and the conflict is surfaced as a warning instead of being silently discarded.
 
 ## Workbench layout
 
@@ -285,14 +300,15 @@ The viewport now separates:
 
 These are all derived from imported 2D geometry, structured source metadata, and deterministic planning data. They are intentionally labeled as imported geometry, extracted features, and operation preview only.
 
-Current CAM Operations v5 planning subset:
+Current CAM Operations v6 planning subset:
 
 - outside contour operations
 - inside contour review contours
 - conservative pocket operations
-- conservative slot operations
+- conservative slot operations with a dedicated small-slot tool class for narrow slots
 - grouped drilling operations from circles by diameter/pattern
 - marking-only engraving operations from text entities
+- depth-aware operation profiles with target depth, bottom behavior, pass-depth hints, safe clearance, retract plane, and review-required assumptions
 
 How features become operations:
 

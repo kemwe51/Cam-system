@@ -118,6 +118,22 @@ describe('CAM API server', () => {
     expect(loadImportResponse.ok).toBe(true);
 
     const plan = planPart(importSession.deterministicPartInput ?? samplePartInput);
+    plan.operations = plan.operations.map((operation) => operation.kind === 'pocket'
+      ? {
+          ...operation,
+          source: 'edited',
+          depthProfile: operation.depthProfile
+            ? {
+                ...operation.depthProfile,
+                targetDepthMm: 11.5,
+                fieldSources: {
+                  ...operation.depthProfile.fieldSources,
+                  targetDepth: 'manual_override',
+                },
+              }
+            : operation.depthProfile,
+        }
+      : operation);
     const projectId = `${plan.part.partId}-${plan.part.revision}`;
 
     const saveResponse = await fetch(`${instance.baseUrl}/projects/${projectId}`, {
@@ -156,6 +172,7 @@ describe('CAM API server', () => {
     expect(loadedProject.plan.operations).toHaveLength(plan.operations.length);
     expect(loadedProject.plan.features[0].depthModel.setupPlane.label).toBe('Top setup plane');
     expect(loadedProject.plan.operations[1].depthProfile.targetDepthMm).toBeGreaterThan(0);
+    expect(loadedProject.plan.operations.some((operation) => operation.depthProfile?.fieldSources?.targetDepth === 'manual_override')).toBe(true);
 
     const legacyLoadResponse = await fetch(`${instance.baseUrl}/drafts/${projectId}`);
     expect(legacyLoadResponse.ok).toBe(true);

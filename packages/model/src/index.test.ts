@@ -132,6 +132,29 @@ describe('@cam/model', () => {
             bottomZMm: -8,
           },
           targetDepthMm: 8,
+          depthStatus: 'assumed',
+          bottomReference: {
+            reference: {
+              id: 'bottom-reference',
+              kind: 'feature_floor',
+              label: 'Outer profile floor',
+              zMm: -8,
+            },
+            source: 'assumed',
+            behavior: 'through',
+          },
+          passDepthPlan: {
+            roughingLayerCount: 3,
+            maxStepDownMm: 3,
+            finishPass: 'profile_cleanup',
+            retractTo: 'retract_plane',
+            note: 'Preview-only pass plan.',
+          },
+          fieldSources: {
+            targetDepth: 'assumed',
+            bottomBehavior: 'assumed',
+            passDepthPlan: 'generated',
+          },
           assumptions: [
             {
               id: 'depth-assumed',
@@ -154,6 +177,8 @@ describe('@cam/model', () => {
     expect(previews[0]?.source).toBe('generated');
     expect(previews[0]?.depthAnnotations[0]).toContain('Target depth');
     expect(previews[0]?.depthAnnotations.some((annotation) => annotation.includes('Depth assumed'))).toBe(true);
+    expect(previews[0]?.depthAnnotations.some((annotation) => annotation.includes('Bottom behavior'))).toBe(true);
+    expect(previews[0]?.paths[0]?.segments[0]?.depthAnnotation).toContain('Z 8.0 mm');
   });
 
   it('derives imported geometry, extracted features, and links from DXF-backed geometry documents', () => {

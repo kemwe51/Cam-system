@@ -19,6 +19,7 @@ The deterministic engine owns:
 - feature normalization
 - operation proposals
 - tool and setup references
+- depth-aware operation profiles, pass-depth planning hints, and deterministic preservation of manual depth overrides
 - risk creation
 - checklist creation
 - cycle time estimation
@@ -35,7 +36,7 @@ The model/import pipeline owns:
 
 The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
 
-## CAM Operations v5
+## CAM Operations v6
 
 `@cam/geometry2d` is now the internal contract boundary for imported planar source data.
 
@@ -147,6 +148,7 @@ The web app now uses a persistent CAM-style layout with an explicit import-first
 Manual programming still remains practical and reducer-driven:
 
 - rename/edit strategy/notes/setup/tool
+- edit review-safe operation depth fields such as target depth, top reference, bottom behavior, safe clearance, and retract plane
 - enable/disable
 - duplicate manual operations
 - delete manual operations
@@ -186,17 +188,19 @@ Operation previews are intentionally honest overlays only:
 - chamfer → edge markers
 - engrave → text markers
 - unlinked/manual cases → generic preview badge
+- depth labels and layered pass hints → preview-only annotations, not final cutter path motion
 
 These are **not** toolpaths. Imported geometry remains 2D interpretation only, optional stock thickness is derived planning context only, and any simple extrusion/context rendering is advisory rather than a solid model.
 
-CAM Operations v5 generated subset:
+CAM Operations v6 generated subset:
 
 - outside contour rough + finish operations
 - conservative inside contour operations
 - conservative pocket rough + finish operations
-- conservative slot operations
+- conservative slot operations, including a small-slot tool class for narrow slots
 - grouped drilling operations from inferred circle patterns
 - marking-only engraving operations
+- depth-aware target depth, bottom behavior, retract, and pass-plan hints for generated operations
 
 ## Current boundaries
 

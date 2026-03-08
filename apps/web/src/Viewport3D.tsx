@@ -166,7 +166,8 @@ function EntityMesh({
 }
 
 function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }: { preview: OperationPreview; entity: ModelEntity | undefined; fragment: ImportedModel['fragments'][number] | undefined; selected: boolean; onSelect: (operationId: string) => void }) {
-  const color = selected ? '#f8fafc' : preview.warnings.length > 0 ? '#f59e0b' : preview.source === 'manual' ? '#fb7185' : preview.source === 'edited' ? '#c084fc' : '#38bdf8';
+  const depthAssumed = (preview.depthProfile?.depthStatus === 'assumed' || preview.depthProfile?.depthStatus === 'unknown' || preview.depthProfile?.assumptions.length);
+  const color = selected ? '#f8fafc' : preview.warnings.length > 0 ? '#f59e0b' : preview.source === 'manual' ? '#fb7185' : preview.source === 'edited' ? '#c084fc' : depthAssumed ? '#facc15' : '#38bdf8';
   const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
   const size = fragment?.size ?? entity?.bounds.size ?? [12, 12, 1.5];
   const select = (event: ThreeEvent<MouseEvent>) => {
@@ -176,11 +177,19 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
   const firstPath = preview.paths[0];
   const firstSegment = firstPath?.segments[0];
   const firstSegmentPoints = firstSegment?.points ?? [];
+  const depthLabel = preview.depthProfile?.targetDepthMm !== undefined
+    ? `Z ${preview.depthProfile.targetDepthMm.toFixed(1)} mm`
+    : preview.depthAnnotations[0] ?? '';
 
   if (preview.kind === 'contour_path' && firstSegmentPoints.length >= 2) {
     return (
       <group key={preview.id} position={[0, 0, 0]} onClick={select}>
         <Line points={firstSegmentPoints} color={color} lineWidth={selected ? 3.4 : 2.4} />
+        {depthLabel ? (
+          <Text position={[position[0], position[1], position[2] + 2]} fontSize={1.6} color={color} anchorX="center" anchorY="middle">
+            {depthLabel}
+          </Text>
+        ) : null}
       </group>
     );
   }
@@ -192,6 +201,11 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
           <cylinderGeometry args={[Math.max(size[0] / 3, 1.5), Math.max(size[0] / 3, 1.5), Math.max(size[2] * 0.6, 2), 24]} />
           <meshStandardMaterial color={color} transparent opacity={0.18} wireframe />
         </mesh>
+        {depthLabel ? (
+          <Text position={[0, 0, Math.max(size[2] * 0.6, 2)]} fontSize={1.5} color={color} anchorX="center" anchorY="middle">
+            {depthLabel}
+          </Text>
+        ) : null}
       </group>
     );
   }
@@ -200,6 +214,11 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
     return (
       <group key={preview.id} position={[0, 0, 0]} onClick={select}>
         <Line points={firstSegment?.points ?? bodyOutlinePoints([Math.max(size[0], 4), Math.max(size[1], 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
+        {depthLabel ? (
+          <Text position={[position[0], position[1], position[2] + 2]} fontSize={1.5} color={color} anchorX="center" anchorY="middle">
+            {depthLabel}
+          </Text>
+        ) : null}
       </group>
     );
   }
@@ -213,6 +232,11 @@ function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }:
       <Text position={[0, 0, 1.1]} fontSize={Math.max(size[1] * 0.18, 1.6)} maxWidth={size[0]} color={color} anchorX="center" anchorY="middle">
         {preview.label}
       </Text>
+      {depthLabel ? (
+        <Text position={[0, -Math.max(size[1] * 0.22, 1.4), 1.1]} fontSize={1.2} maxWidth={size[0]} color={color} anchorX="center" anchorY="middle">
+          {depthLabel}
+        </Text>
+      ) : null}
     </group>
   );
 }
