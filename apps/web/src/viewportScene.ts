@@ -33,7 +33,7 @@ export type ScenePipeline = {
 };
 
 export const derivedViewportDisclaimer =
-  'Derived viewport only: imported 2D geometry, extracted features, stock assumptions, and operation preview overlays are arranged from DXF/JSON import metadata and deterministic plan state. This is not a CAD kernel, solid model, or verified toolpath preview.';
+  'Derived viewport only: imported 2D geometry, extracted features, stock assumptions, and deterministic path-planning overlays are arranged from DXF/JSON import metadata and draft plan state. This is not a CAD kernel, solid model, verified toolpath simulation, or final NC output.';
 
 export function buildOperationPreviewLayer(model: ImportedModel | null, operations: DraftCamPlan['operations']): OperationPreview[] {
   if (!model) {

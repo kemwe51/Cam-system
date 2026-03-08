@@ -172,6 +172,10 @@ function depthFieldLabel(source: 'generated' | 'assumed' | 'manual_override' | u
   }
 }
 
+function pathFieldLabel(source: 'generated' | 'assumed' | 'manual_override' | undefined): string {
+  return depthFieldLabel(source);
+}
+
 function App() {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const [error, setError] = useState<string | null>(null);
@@ -277,6 +281,30 @@ function App() {
       operationId,
       changes: {
         depthProfile: profileUpdater(operation.depthProfile),
+      },
+      message,
+    });
+  }
+
+  function updateOperationPathProfile(
+    operationId: string,
+    profileUpdater: (current: NonNullable<NonNullable<typeof selectedOperation>['pathProfile']>) => NonNullable<NonNullable<typeof selectedOperation>['pathProfile']>,
+    message: string,
+  ) {
+    const operation = orderedOperations.find((item) => item.id === operationId);
+    if (!operation?.pathProfile) {
+      dispatch({
+        type: 'log',
+        message: `Skipped path-planning edit for ${operation?.name ?? operationId} because no editable path profile is available.`,
+      });
+      return;
+    }
+
+    dispatch({
+      type: 'updateOperation',
+      operationId,
+      changes: {
+        pathProfile: profileUpdater(operation.pathProfile),
       },
       message,
     });
@@ -777,8 +805,9 @@ function App() {
                     </button>
                      <div className="chip-row">
                        {warnings.map((warning) => <span key={`${operation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
-                       {hasDepthAssumption(operation.depthProfile) ? <span className="chip chip-dirty">depth assumed</span> : null}
-                     </div>
+                        {hasDepthAssumption(operation.depthProfile) ? <span className="chip chip-dirty">depth assumed</span> : null}
+                        {operation.pathProfile?.pathPlans.length ? <span className="chip">{operation.pathProfile.pathPlans.length} path plan{operation.pathProfile.pathPlans.length === 1 ? '' : 's'}</span> : null}
+                      </div>
                     <div className="tree-controls-inline">
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'up', message: `Moved ${operation.name} earlier in the draft order.` })} disabled={index <= 0}>↑</button>
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'down', message: `Moved ${operation.name} later in the draft order.` })} disabled={index === filteredOperations.length - 1}>↓</button>
@@ -845,6 +874,8 @@ function App() {
             {selectedOperation.isDirty ? <span className="chip chip-dirty">Unsaved op change</span> : null}
             {selectedOperation.frozen ? <span className="chip">Frozen for regeneration</span> : null}
             {hasDepthAssumption(selectedOperation.depthProfile) ? <span className="chip chip-dirty">depth assumed</span> : null}
+            {selectedOperation.pathProfile?.pathPlans.length ? <span className="chip">{selectedOperation.pathProfile.pathPlans.length} path candidate{selectedOperation.pathProfile.pathPlans.length === 1 ? '' : 's'}</span> : null}
+            {selectedOperation.pathProfile?.overridePreserved ? <span className="chip chip-dirty">path override preserved</span> : null}
           </div>
           <label>
             <span>Operation name</span>
@@ -1071,6 +1102,184 @@ function App() {
               </label>
             </>
           ) : null}
+          {selectedOperation.pathProfile ? (
+            <>
+              <label>
+                <span>Entry strategy</span>
+                <select
+                  value={selectedOperation.pathProfile.entryStrategy}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as typeof selectedOperation.pathProfile.entryStrategy;
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      entryStrategy: nextValue,
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        entryStrategy: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        entryStrategy: nextValue,
+                        leadIn: plan.leadIn ? { ...plan.leadIn, strategy: nextValue } : plan.leadIn,
+                      })),
+                    }), `Updated entry strategy for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="direct_plunge">Direct plunge</option>
+                  <option value="linear_ramp">Linear ramp</option>
+                  <option value="helical_ramp">Helical ramp</option>
+                  <option value="pre_drill">Pre-drill</option>
+                  <option value="none">None</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.entryStrategy)}</small>
+              </label>
+              <label>
+                <span>Exit strategy</span>
+                <select
+                  value={selectedOperation.pathProfile.exitStrategy}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as typeof selectedOperation.pathProfile.exitStrategy;
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      exitStrategy: nextValue,
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        exitStrategy: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        exitStrategy: nextValue,
+                        leadOut: plan.leadOut ? { ...plan.leadOut, strategy: nextValue } : plan.leadOut,
+                      })),
+                    }), `Updated exit strategy for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="linear_exit">Linear exit</option>
+                  <option value="tangent_exit">Tangent exit</option>
+                  <option value="direct_retract">Direct retract</option>
+                  <option value="none">None</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.exitStrategy)}</small>
+              </label>
+              <label>
+                <span>Clearance hint</span>
+                <select
+                  value={selectedOperation.pathProfile.clearanceStrategy}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as typeof selectedOperation.pathProfile.clearanceStrategy;
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      clearanceStrategy: nextValue,
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        clearanceStrategy: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        clearanceStrategy: nextValue,
+                      })),
+                    }), `Updated clearance strategy for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="safe_clearance">Safe clearance</option>
+                  <option value="retract_plane">Retract plane</option>
+                  <option value="feature_top">Feature top</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.clearanceStrategy)}</small>
+              </label>
+              <label>
+                <span>Retract hint</span>
+                <select
+                  value={selectedOperation.pathProfile.retractStrategy}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as typeof selectedOperation.pathProfile.retractStrategy;
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      retractStrategy: nextValue,
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        retractStrategy: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        retractStrategy: nextValue,
+                      })),
+                    }), `Updated retract strategy for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="safe_clearance">Safe clearance</option>
+                  <option value="retract_plane">Retract plane</option>
+                  <option value="feature_top">Feature top</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.retractStrategy)}</small>
+              </label>
+              <label>
+                <span>Path direction hint</span>
+                <select
+                  value={selectedOperation.pathProfile.pathDirectionHint ?? ''}
+                  onChange={(event) => {
+                    const nextValue = event.target.value || undefined;
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      pathDirectionHint: nextValue as typeof profile.pathDirectionHint,
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        pathDirectionHint: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        pathDirectionHint: nextValue as typeof plan.pathDirectionHint,
+                      })),
+                    }), `Updated path direction hint for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="">Generated default</option>
+                  <option value="cw">Clockwise</option>
+                  <option value="ccw">Counter-clockwise</option>
+                  <option value="climb">Climb</option>
+                  <option value="conventional">Conventional</option>
+                  <option value="left_to_right">Left to right</option>
+                  <option value="center_out">Center out</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.pathDirectionHint)}</small>
+              </label>
+              <label>
+                <span>Path order hint</span>
+                <select
+                  value={selectedOperation.pathProfile.pathOrderingHint?.mode ?? 'feature_order'}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as NonNullable<typeof selectedOperation.pathProfile.pathOrderingHint>['mode'];
+                    updateOperationPathProfile(selectedOperation.id, (profile) => ({
+                      ...profile,
+                      pathOrderingHint: {
+                        mode: nextValue,
+                        direction: profile.pathDirectionHint,
+                        note: profile.pathOrderingHint?.note ?? 'Manual path ordering override retained during regeneration.',
+                      },
+                      fieldSources: {
+                        ...profile.fieldSources,
+                        pathOrderingHint: 'manual_override',
+                      },
+                      pathPlans: profile.pathPlans.map((plan) => ({
+                        ...plan,
+                        orderingHint: {
+                          mode: nextValue,
+                          direction: profile.pathDirectionHint,
+                          note: plan.orderingHint?.note ?? 'Manual path ordering override retained during regeneration.',
+                        },
+                      })),
+                    }), `Updated path ordering for ${selectedOperation.name}.`);
+                  }}
+                >
+                  <option value="feature_order">Feature order</option>
+                  <option value="nearest_neighbor">Nearest neighbor</option>
+                  <option value="loop_priority">Loop priority</option>
+                  <option value="pattern_group">Pattern group</option>
+                </select>
+                <small>{pathFieldLabel(selectedOperation.pathProfile.fieldSources?.pathOrderingHint)}</small>
+              </label>
+            </>
+          ) : null}
           <label className="checkbox-row">
             <input type="checkbox" checked={selectedOperation.enabled} onChange={() => dispatch({ type: 'toggleOperation', operationId: selectedOperation.id, message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.` })} />
             <span>Enabled for the draft sequence</span>
@@ -1102,6 +1311,16 @@ function App() {
               {selectedOperation.depthProfile.warnings.map((warning) => <li key={warning.code}>{warning.severity.toUpperCase()}: {warning.message}</li>)}
             </ul>
           ) : null}
+          {selectedOperation.pathProfile?.warnings.length ? (
+            <ul className="detail-list">
+              {selectedOperation.pathProfile.warnings.map((warning) => <li key={warning.code}>{warning.severity.toUpperCase()}: {warning.message}</li>)}
+            </ul>
+          ) : null}
+          {selectedOperation.pathProfile?.assumptions.length ? (
+            <ul className="detail-list">
+              {selectedOperation.pathProfile.assumptions.map((assumption) => <li key={assumption.id}>{assumption.label}: {assumption.description}</li>)}
+            </ul>
+          ) : null}
           <div className="inspector-actions">
             <button type="button" className="secondary-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: selectedOperation.id, message: `Duplicated ${selectedOperation.name} as a manual operation.` })}>Duplicate</button>
             <button type="button" className="secondary-button" disabled={selectedOperation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: selectedOperation.id, message: `Deleted manual operation ${selectedOperation.name}.` })}>Delete manual op</button>
@@ -1114,6 +1333,7 @@ function App() {
             <div><dt>Tool class</dt><dd>{selectedOperation.toolClass?.replaceAll('_', ' ') ?? 'Not set'}</dd></div>
             <div><dt>Tool rule</dt><dd>{selectedOperation.toolSelectionReason?.reason ?? 'Not set'}</dd></div>
             <div><dt>Preview summary</dt><dd>{linkedPreview ? `${linkedPreview.sourceGeometryIds.length} source refs linked` : 'Generic preview only'}</dd></div>
+            {selectedOperation.pathProfile ? <div><dt>Path planning</dt><dd>{selectedOperation.pathProfile.previewMode.replaceAll('_', ' ')}</dd></div> : null}
             <div><dt>Inference</dt><dd>{selectedOperation.machiningIntent?.rationale ?? 'Manual operation'}</dd></div>
             {selectedOperation.depthProfile?.depthStatus ? <div><dt>Depth state</dt><dd>{selectedOperation.depthProfile.depthStatus.replace('_', ' ')}</dd></div> : null}
             {selectedOperation.depthProfile?.targetDepthMm !== undefined ? <div><dt>Target depth</dt><dd>{selectedOperation.depthProfile.targetDepthMm.toFixed(1)} mm</dd></div> : null}
@@ -1124,6 +1344,14 @@ function App() {
             {selectedOperation.depthProfile?.safeClearance ? <div><dt>Safe clearance</dt><dd>{selectedOperation.depthProfile.safeClearance.zMm.toFixed(1)} mm</dd></div> : null}
             {selectedOperation.depthProfile?.retractPlane ? <div><dt>Retract plane</dt><dd>{selectedOperation.depthProfile.retractPlane.zMm.toFixed(1)} mm</dd></div> : null}
             {selectedOperation.depthProfile?.overridePreserved ? <div><dt>Regeneration</dt><dd>Manual depth override preserved</dd></div> : null}
+            {selectedOperation.pathProfile?.workOffset ? <div><dt>Work offset</dt><dd>{selectedOperation.pathProfile.workOffset.code}</dd></div> : null}
+            {selectedOperation.pathProfile?.machineCoordinateReference ? <div><dt>Machine reference</dt><dd>{selectedOperation.pathProfile.machineCoordinateReference.label}</dd></div> : null}
+            {selectedOperation.pathProfile ? <div><dt>Path candidates</dt><dd>{selectedOperation.pathProfile.pathPlans.length}</dd></div> : null}
+            {selectedOperation.pathProfile?.pathDirectionHint ? <div><dt>Path direction</dt><dd>{selectedOperation.pathProfile.pathDirectionHint.replaceAll('_', ' ')}</dd></div> : null}
+            {selectedOperation.pathProfile?.pathOrderingHint ? <div><dt>Path ordering</dt><dd>{selectedOperation.pathProfile.pathOrderingHint.mode.replaceAll('_', ' ')}</dd></div> : null}
+            {selectedOperation.pathProfile?.clearanceStrategy ? <div><dt>Clearance hint</dt><dd>{selectedOperation.pathProfile.clearanceStrategy.replaceAll('_', ' ')}</dd></div> : null}
+            {selectedOperation.pathProfile?.retractStrategy ? <div><dt>Retract hint</dt><dd>{selectedOperation.pathProfile.retractStrategy.replaceAll('_', ' ')}</dd></div> : null}
+            {selectedOperation.pathProfile?.overridePreserved ? <div><dt>Path regeneration</dt><dd>Manual path overrides preserved</dd></div> : null}
           </dl>
         </div>
       );

@@ -20,6 +20,7 @@ describe('viewportScene', () => {
     expect(scene.featureLayer.entities.length).toBeGreaterThan(0);
     expect(scene.operationPreviewLayer.previews.length).toBe(plan.operations.length);
     expect(scene.operationPreviewLayer.previews[0]?.paths[0]?.segments.length).toBeGreaterThan(0);
-    expect(scene.disclaimer).toContain('operation preview');
+    expect(scene.operationPreviewLayer.previews.some((preview) => preview.paths.some((path) => path.segments.some((segment) => segment.motionType === 'rapid_move')))).toBe(true);
+    expect(scene.disclaimer).toContain('path-planning');
   });
 });

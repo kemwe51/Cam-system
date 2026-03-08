@@ -2,9 +2,9 @@
 
 Production-oriented TypeScript monorepo foundation for a programmer-in-the-loop CAM workflow focused on 2D and 2.5D milling.
 
-## CAM Operations v6
+## Initial Path Planning Layer v7
 
-This milestone moves the repo from a geometry-aware authoring foundation into a first real deterministic CAM-authoring layer for imported 2D geometry while staying explicit about what is still preview-only, review-required, or not implemented yet.
+This milestone moves the repo from a geometry-aware operation-preview foundation into a first deterministic path-planning layer for imported 2D and foundational 2.5D milling work while staying explicit about what is still review-only, conservative, or not implemented yet.
 
 ### What is implemented now
 
@@ -13,14 +13,21 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - stable entity ids, explicit unit metadata, layer visibility metadata, document bounds, and a tolerance-aware graph builder for imported planar data
   - no fake B-Rep claims: this package stays 2D-focused and honest
 - **Geometry/model foundation** in `@cam/model`
-  - explicit imported geometry, extracted feature, and operation-preview modeling on top of the existing `ImportedModel` / `ModelEntity` / `ModelView` contracts
+  - explicit imported geometry, extracted feature, operation-preview, and path-planning-aware modeling on top of the existing `ImportedModel` / `ModelEntity` / `ModelView` contracts
   - stable ids for source geometry, extracted features, plan features, and previews so mappings remain durable across import → plan → review
-  - viewport fragments now distinguish raw imported geometry, extracted feature overlays, and operation preview overlays
-- **CAM Operations v6 deterministic planning**
+  - viewport fragments now distinguish raw imported geometry, extracted feature overlays, and deterministic path-planning overlays
+- **Initial Path Planning Layer v7**
   - outside contour rough + finish generation where outer profile intent is clear
   - conservative inside contour, pocket, slot, and grouped-hole generation from extracted 2D geometry
   - generated/manual/edited operation source tracking with freeze-for-regeneration support
-  - planning warnings, machining assumptions, tool-class selection reasons, linked preview metadata, and foundational depth metadata carried with operations
+  - planning warnings, machining assumptions, tool-class selection reasons, linked preview metadata, foundational depth metadata, and deterministic path-plan candidates carried with operations
+- **Deterministic path-planning foundation**
+  - shared schemas now include `PathPlan`, `PathPlanSegment`, `LinearPathSegment`, `ArcPathSegment`, `RapidMove`, `FeedMove`, `PlungeMove`, `RetractMove`, `LeadInPlan`, `LeadOutPlan`, `EntryStrategy`, `ExitStrategy`, `ClearanceStrategy`, `PathOrderingHint`, `PathPlanWarning`, `PathPlanAssumption`, `OperationPathProfile`, and `PathPreviewMode`
+  - contour, drill, pocket, and slot operations now carry first deterministic path-plan candidates with entry, exit, clearance, retract, ordering, and pass-depth metadata
+  - generated path plans remain deterministic machining candidates only; they are still not verified cutter compensation, simulation, or production NC output
+- **Setup / work-offset foundation**
+  - setup definitions now carry practical planning metadata for orientation, work offset, machine coordinate reference, clearance reference, stock reference, and setup warnings
+  - current scope remains a top-side 3-axis / indexed-2.5D planning foundation so future multi-setup work can extend the same contracts
 - **Source-first workspace resolution for local work**
   - workspace libraries now expose a `source` condition for local app/test work while keeping `dist/` outputs for package builds and packaged consumers
   - the web app resolves `@cam/*` libraries to `src/index.ts` in Vite dev, Vitest, `tsc -b`, and `vite build`, so `npm run build --workspace @cam/web` works from a clean checkout
@@ -58,7 +65,7 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - explicit scene builder layered into imported geometry, stock, extracted features, selection, and operation preview layers
   - stable entity ids across rebuilds
   - open-chain vs closed-loop distinction, top-view-friendly review, and selected-entity highlighting for imported 2D geometry
-  - operation preview overlays linked to extracted feature ids and operation ids
+  - path-plan-aware overlays linked to extracted feature ids and operation ids, including rapid/feed/plunge/retract distinctions, drill ordering, and entry/exit hints
 - **Manual programming improvements**
   - operation-to-feature relinking
   - persistent operation notes
@@ -68,8 +75,9 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - regenerate generated operations from the whole plan or a selected feature while preserving manual operations and frozen edits
   - operation source badges (`generated`, `manual`, `edited`) and explicit regeneration protection for programmer-in-the-loop authoring
   - project-level unsaved summary and revision summary
+  - manual path-planning overrides for entry, exit, clearance, retract, direction, and ordering hints with preservation during regeneration
 - **AI advisory review context upgrade**
-  - review context now includes DXF source metadata, extraction warnings, open/closed profile counts, unclassified geometry summary, and manual reclassification context
+  - review context now includes DXF source metadata, extraction warnings, open/closed profile counts, unclassified geometry summary, manual reclassification context, path warnings, path ordering, setup/work-offset metadata, and manual path overrides
 
 ## What is still foundational or derived only
 
@@ -85,8 +93,8 @@ This repository still does **not** implement:
 Important honesty boundary:
 
 - The viewport is a **derived visualization from imported geometry, extracted feature overlays, structured JSON, and deterministic plan state**.
-- Operation preview is an **operation preview**, not a toolpath or final NC motion.
-- Pass-depth plans and layered machining previews are **planning hints only**, not final calculated cutter passes or simulation.
+- Deterministic path plans are **machining-path candidates for review**, not a final toolpath, postprocessed program, or verified NC motion.
+- Pass-depth plans, lead-in/lead-out hints, clearance/retract levels, and path ordering are **planning hints only**, not final calculated cutter passes or simulation.
 - DXF support is **practical-subset only**, not full DXF support.
 - STEP remains a **workflow-level placeholder only**.
 - AI review is **advisory only** and never overrides deterministic planning authority.
