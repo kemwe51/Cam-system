@@ -20,7 +20,15 @@ This milestone moves the repo from a geometry-aware authoring foundation into a 
   - outside contour rough + finish generation where outer profile intent is clear
   - conservative inside contour, pocket, slot, and grouped-hole generation from extracted 2D geometry
   - generated/manual/edited operation source tracking with freeze-for-regeneration support
-  - planning warnings, machining assumptions, tool-class selection reasons, and linked preview metadata carried with operations
+  - planning warnings, machining assumptions, tool-class selection reasons, linked preview metadata, and foundational depth metadata carried with operations
+- **Source-first workspace resolution for local work**
+  - workspace libraries now expose a `source` condition for local dev/test while keeping `dist/` as the default production build boundary
+  - Vitest and Vite resolve `@cam/*` libraries to `src/index.ts` during local test/dev flows
+  - API `tsx` dev runtime uses Node `--conditions=source`, so sibling package `dist/` artifacts are no longer a hidden prerequisite
+- **2.5D depth foundation**
+  - shared schemas now include `SetupPlane`, `ZReference`, `DepthRange`, `MachiningLevel`, `FeatureDepthModel`, `OperationDepthProfile`, `StockTop`, `FloorLevel`, `PassDepthHint`, `SafeClearance`, `DepthAssumption`, and `DepthWarning`
+  - deterministic plans now attach depth metadata, assumptions, and warnings to normalized features and operations where depth is known or inferred
+  - previews can expose depth annotations, but they still do not claim verified tool motion or 3D toolpaths
 - **Importer workflow v4**
   - real JSON importer returning structured source metadata, warnings, imported model data, and deterministic part input when available
   - real DXF importer for a practical planar subset with explicit unsupported-entity warnings
@@ -66,6 +74,7 @@ This repository still does **not** implement:
 - real STEP parsing or STEP-derived machining
 - a B-Rep, solid-model, or CAD kernel
 - verified toolpath generation or machining simulation
+- true 2.5D feature depth extraction from solids or verified section data
 - postprocessing or production G-code output
 - feeds/speeds databases, holder assemblies, or collision checking
 
@@ -108,21 +117,22 @@ npm run verify
 
 ## Development
 
-Workspace packages resolve through their built `dist/` entries for runtime usage. Tests still execute the current workspace source files, while cross-workspace imports stay honest to the published package boundary by resolving through each package's `main` / `exports` entry. Shared CLI tooling stays at the repo root, but every workspace now declares its own direct runtime imports and test-only imports so clean installs do not depend on lucky hoisting. The stable developer workflow is:
+Local development and tests are now **source-first**:
 
-1. install dependencies once with `npm install`
-2. build workspace libraries with `npm run build:packages`
-3. run the API or web app from the root scripts so they always start from freshly built package output
+- workspace libraries publish `dist/` by default for production-style builds
+- the same libraries expose a `source` export condition pointing at `src/index.ts`
+- shared `vitest.workspace.ts` aliases plus Vite `resolve.conditions` send local tests and Vite dev to source entries
+- API dev uses `NODE_OPTIONS=--conditions=source` so `tsx` resolves sibling libraries from source instead of built `dist/`
 
-Production builds use dedicated `tsconfig.build.json` files so test files are excluded from emitted `dist/` output. The regular `tsconfig.json` files stay available for editor/test/dev type checking.
+Production builds still use dedicated `tsconfig.build.json` files and emitted `dist/` output. Test files remain excluded from emitted build artifacts.
 
-Run the API:
+Run the API from a clean checkout:
 
 ```bash
 npm run dev:api
 ```
 
-Run the web workbench:
+Run the web workbench from a clean checkout:
 
 ```bash
 npm run dev:web
@@ -144,25 +154,24 @@ The web app defaults to `http://localhost:3001` for API requests.
 - Root scripts keep the build order explicit: shared libraries build first, then the API and web apps consume their published `dist/` exports.
 - `npm run verify` mirrors the CI guard after install by running the full root build plus workspace tests.
 
-The earlier `Cannot find module 'zod'` failure was a symptom of dependency-resolution drift rather than a bad TypeScript setting in `@cam/shared`: the repo mixed direct workspace imports with hoisted/transitive dependencies, so different clean-checkout installs could produce different effective module trees. The fix is to keep source/test imports declared in the package that uses them, record the expected Node/npm floor, and verify the lockfile with a clean install in CI.
-
 ### Root workspace scripts
 
 ```bash
 npm run build:packages   # build shared workspace libraries only
-npm run build            # build libraries, then api and web
+npm run build            # build libraries, then api and web using dist output
 npm run verify           # build everything, then run workspace tests
-npm run test             # rebuild libraries, then run all workspace tests
-npm run test:workspaces  # run workspace tests without rebuilding first
-npm run dev:api          # start API from a clean checkout after building libraries
-npm run dev:web          # start Vite web dev server after building libraries
+npm run test             # run all workspace tests source-first without prebuilding sibling dist
+npm run test:workspaces  # run workspace tests without any build pre-step
+npm run dev:api          # start API source-first from a clean checkout
+npm run dev:web          # start Vite web dev server source-first from a clean checkout
 ```
 
-Contributor caveat:
+Resolution strategy summary:
 
-- Runtime resolution stays intentionally honest: package `main` / `exports` point at built `dist/` files.
-- If you change code inside `packages/*` while `npm run dev:api` or `npm run dev:web` is already running, rebuild the libraries with `npm run build:packages` so the apps pick up the new package output.
-- Vitest continues to execute tests from source files; production builds no longer emit `*.test.*` artifacts.
+- Production build/publish flow stays `dist`-first through package `main` / default `exports`.
+- Local dev/test flows are source-first and do not require manual prebuilding of sibling workspace libraries.
+- Vitest executes workspace tests from source entries; production builds still do not emit `*.test.*` artifacts.
+- `npm run build` remains the explicit command that refreshes package `dist/` outputs for packaged consumers.
 - Vite and TypeScript cache folders such as `.vite`, `.vite-temp`, and `node_modules/.tmp` are transient and ignored from version control.
 
 For production-style API deployment, set `CAM_WEB_ORIGIN` explicitly so the API only accepts the intended web origin.

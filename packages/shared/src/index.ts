@@ -25,6 +25,54 @@ export const stockSchema = z.object({
   zMm: positiveNumber,
 });
 
+export const setupPlaneSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  orientation: z.enum(['top', 'front', 'right', 'custom']).default('top'),
+});
+
+export const zReferenceSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['stock_top', 'setup_zero', 'feature_top', 'feature_floor', 'safe_clearance', 'unknown']),
+  label: z.string().min(1),
+  zMm: z.number(),
+});
+
+export const depthRangeSchema = z.object({
+  topZMm: z.number(),
+  bottomZMm: z.number(),
+}).refine((value) => value.bottomZMm <= value.topZMm, {
+  path: ['bottomZMm'],
+  message: 'bottomZMm must be less than or equal to topZMm.',
+});
+
+export const machiningLevelSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  reference: zReferenceSchema,
+  zMm: z.number(),
+});
+
+export const stockTopSchema = z.object({
+  reference: zReferenceSchema,
+  zMm: z.number(),
+});
+
+export const floorLevelSchema = z.object({
+  reference: zReferenceSchema,
+  zMm: z.number(),
+});
+
+export const passDepthHintSchema = z.object({
+  axialStepDownMm: positiveNumber,
+  basis: z.enum(['feature_depth', 'tool_capacity', 'manual_hint', 'assumed']).default('feature_depth'),
+});
+
+export const safeClearanceSchema = z.object({
+  reference: zReferenceSchema,
+  zMm: nonNegativeNumber,
+});
+
 export const topSurfaceSchema = z.object({
   id: optionalId,
   name: featureNameSchema,
@@ -116,6 +164,21 @@ export const featureClassificationSchema = z.enum([
 
 export const riskLevelSchema = z.enum(['low', 'medium', 'high']);
 
+export const depthAssumptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  source: z.enum(['structured_input', 'import_default', 'manual_override', 'unknown']).default('unknown'),
+  reviewRequired: z.boolean().default(true),
+});
+
+export const depthWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  severity: riskLevelSchema.default('medium'),
+  reviewRequired: z.boolean().default(true),
+});
+
 export const machiningIntentSchema = z.object({
   featureId: z.string().min(1),
   classification: featureClassificationSchema,
@@ -123,6 +186,28 @@ export const machiningIntentSchema = z.object({
   requiresReview: z.boolean().default(false),
   rationale: z.string().min(1),
   source: z.enum(['structured', 'extracted_feature', 'manual_override']).default('structured'),
+});
+
+export const featureDepthModelSchema = z.object({
+  setupPlane: setupPlaneSchema,
+  stockTop: stockTopSchema,
+  floorLevel: floorLevelSchema.optional(),
+  depthRange: depthRangeSchema.optional(),
+  machiningLevels: z.array(machiningLevelSchema).default([]),
+  assumptions: z.array(depthAssumptionSchema).default([]),
+  warnings: z.array(depthWarningSchema).default([]),
+});
+
+export const operationDepthProfileSchema = z.object({
+  setupPlane: setupPlaneSchema,
+  stockTop: stockTopSchema.optional(),
+  floorLevel: floorLevelSchema.optional(),
+  depthRange: depthRangeSchema.optional(),
+  targetDepthMm: nonNegativeNumber.optional(),
+  passDepthHint: passDepthHintSchema.optional(),
+  safeClearance: safeClearanceSchema.optional(),
+  assumptions: z.array(depthAssumptionSchema).default([]),
+  warnings: z.array(depthWarningSchema).default([]),
 });
 
 export const toolClassSchema = z.enum([
@@ -142,6 +227,7 @@ export const previewPathSegmentSchema = z.object({
   points: z.array(previewPointSchema).min(1),
   closed: z.boolean().default(false),
   label: z.string().min(1).optional(),
+  depthAnnotation: z.string().min(1).optional(),
 });
 
 export const previewPathSchema = z.object({
@@ -199,6 +285,7 @@ export const normalizedFeatureSchema = z.object({
   origin: featureOriginSchema.default('structured'),
   classificationState: featureClassificationStateSchema.default('automatic'),
   machiningIntent: machiningIntentSchema.optional(),
+  depthModel: featureDepthModelSchema.optional(),
 });
 
 export const toolTypeSchema = z.enum(['face_mill', 'flat_end_mill', 'drill', 'chamfer_mill', 'engraver']);
@@ -277,6 +364,7 @@ export const operationSchema = z.object({
   toolClass: toolClassSchema.optional(),
   toolSelectionReason: toolSelectionReasonSchema.optional(),
   machiningIntent: machiningIntentSchema.optional(),
+  depthProfile: operationDepthProfileSchema.optional(),
   links: z.array(operationLinkSchema).default([]),
   warnings: z.array(planningWarningSchema).default([]),
   assumptions: z.array(machiningAssumptionSchema).default([]),
@@ -618,21 +706,29 @@ export type ApprovalStateValue = z.infer<typeof approvalStateValueSchema>;
 export type CamReview = z.infer<typeof camReviewSchema>;
 export type ChecklistItem = z.infer<typeof checklistItemSchema>;
 export type ContourInput = z.infer<typeof contourSchema>;
+export type DepthAssumption = z.infer<typeof depthAssumptionSchema>;
+export type DepthRange = z.infer<typeof depthRangeSchema>;
+export type DepthWarning = z.infer<typeof depthWarningSchema>;
 export type DraftCamPlan = z.infer<typeof draftCamPlanSchema>;
+export type FeatureDepthModel = z.infer<typeof featureDepthModelSchema>;
 export type FeatureKind = z.infer<typeof featureKindSchema>;
 export type FeatureClassification = z.infer<typeof featureClassificationSchema>;
+export type FloorLevel = z.infer<typeof floorLevelSchema>;
 export type HoleGroupInput = z.infer<typeof holeGroupSchema>;
 export type MachineProfile = z.infer<typeof machineProfileSchema>;
+export type MachiningLevel = z.infer<typeof machiningLevelSchema>;
 export type MachiningAssumption = z.infer<typeof machiningAssumptionSchema>;
 export type MachiningIntent = z.infer<typeof machiningIntentSchema>;
 export type NormalizedFeature = z.infer<typeof normalizedFeatureSchema>;
 export type GeneratedOperation = z.infer<typeof generatedOperationSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type OperationCandidate = z.infer<typeof operationCandidateSchema>;
+export type OperationDepthProfile = z.infer<typeof operationDepthProfileSchema>;
 export type OperationGroup = z.infer<typeof operationGroupSchema>;
 export type OperationKind = z.infer<typeof operationKindSchema>;
 export type OperationLink = z.infer<typeof operationLinkSchema>;
 export type PartInput = z.infer<typeof partInputSchema>;
+export type PassDepthHint = z.infer<typeof passDepthHintSchema>;
 export type PlanningWarning = z.infer<typeof planningWarningSchema>;
 export type PocketInput = z.infer<typeof pocketSchema>;
 export type PreviewPath = z.infer<typeof previewPathSchema>;
@@ -643,11 +739,15 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type ReviewRequest = z.infer<typeof reviewRequestSchema>;
 export type Risk = z.infer<typeof riskSchema>;
 export type RiskLevel = z.infer<typeof riskLevelSchema>;
+export type SafeClearance = z.infer<typeof safeClearanceSchema>;
 export type SelectedEntity = z.infer<typeof selectedEntitySchema>;
 export type Setup = z.infer<typeof setupSchema>;
+export type SetupPlane = z.infer<typeof setupPlaneSchema>;
 export type SlotInput = z.infer<typeof slotSchema>;
+export type StockTop = z.infer<typeof stockTopSchema>;
 export type Tool = z.infer<typeof toolSchema>;
 export type ToolClass = z.infer<typeof toolClassSchema>;
 export type ToolLibrary = z.infer<typeof toolLibrarySchema>;
 export type ToolSelectionReason = z.infer<typeof toolSelectionReasonSchema>;
 export type ToolType = z.infer<typeof toolTypeSchema>;
+export type ZReference = z.infer<typeof zReferenceSchema>;

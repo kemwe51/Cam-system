@@ -100,8 +100,49 @@ describe('@cam/model', () => {
         estimatedMinutes: 2,
         enabled: true,
         origin: 'automatic',
+        source: 'generated',
         order: 0,
         isDirty: false,
+        depthProfile: {
+          setupPlane: {
+            id: 'setup-plane-top',
+            label: 'Top setup plane',
+            orientation: 'top',
+          },
+          stockTop: {
+            reference: {
+              id: 'stock-top',
+              kind: 'stock_top',
+              label: 'Stock top',
+              zMm: 0,
+            },
+            zMm: 0,
+          },
+          floorLevel: {
+            reference: {
+              id: 'floor-level',
+              kind: 'feature_floor',
+              label: 'Outer profile floor',
+              zMm: -8,
+            },
+            zMm: -8,
+          },
+          depthRange: {
+            topZMm: 0,
+            bottomZMm: -8,
+          },
+          targetDepthMm: 8,
+          assumptions: [
+            {
+              id: 'depth-assumed',
+              label: 'Depth assumed from 2D source',
+              description: 'Preview only.',
+              source: 'import_default',
+              reviewRequired: true,
+            },
+          ],
+          warnings: [],
+        },
       },
     ]);
 
@@ -111,6 +152,8 @@ describe('@cam/model', () => {
     expect(previews[0]?.kind).toBe('contour_path');
     expect(previews[0]?.paths[0]?.segments.length).toBeGreaterThan(0);
     expect(previews[0]?.source).toBe('generated');
+    expect(previews[0]?.depthAnnotations[0]).toContain('Target depth');
+    expect(previews[0]?.depthAnnotations.some((annotation) => annotation.includes('Depth assumed'))).toBe(true);
   });
 
   it('derives imported geometry, extracted features, and links from DXF-backed geometry documents', () => {

@@ -87,6 +87,7 @@ describe('workbenchReducer', () => {
     const projectRecord = buildProjectRecord(edited);
     expect(projectRecord?.plan.part.partId).toBe(samplePartInput.partId);
     expect(projectRecord?.plan.operations[0]?.isDirty).toBe(false);
+    expect(projectRecord?.plan.operations[0]?.depthProfile?.setupPlane.label).toBe('Top setup plane');
 
     const loaded = workbenchReducer(edited, {
       type: 'projectLoaded',
@@ -97,6 +98,7 @@ describe('workbenchReducer', () => {
     expect(loaded.dirty).toBe(false);
     expect(loaded.lastSavedAt).toBe(projectRecord?.updatedAt ?? null);
     expect(loaded.draftPlan?.operations.every((operation) => operation.isDirty === false)).toBe(true);
+    expect(loaded.draftPlan?.features[0]?.depthModel?.stockTop.zMm).toBe(0);
   });
 
   it('tracks import session and preserves source metadata in project records', () => {

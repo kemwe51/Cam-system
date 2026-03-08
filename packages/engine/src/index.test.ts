@@ -119,6 +119,8 @@ describe('planPart', () => {
     expect(plan.operations.map((operation) => operation.order)).toEqual(
       plan.operations.map((_, index) => index),
     );
+    expect(plan.features.every((feature) => feature.depthModel?.setupPlane.label === 'Top setup plane')).toBe(true);
+    expect(plan.operations.every((operation) => operation.depthProfile?.setupPlane.label === 'Top setup plane')).toBe(true);
   });
 
   it('flags deep pockets and narrow slots as review risks', () => {
@@ -127,6 +129,20 @@ describe('planPart', () => {
 
     expect(titles).toContain('Deep pocket needs reach review');
     expect(titles).toContain('Narrow slot limits tooling');
+  });
+
+  it('keeps depth assumptions explicit for inferred 2D geometry features and operations', () => {
+    const extraction = extractGeometryFeatures(parseDxfGeometry2D(dxfFixture, 'fixture'));
+    const plan = planPart(extraction.partInput);
+    const inferredFeature = plan.features.find((feature) => feature.origin === 'geometry_inferred' && feature.depthMm > 0);
+    const inferredOperation = inferredFeature
+      ? plan.operations.find((operation) => operation.featureId === inferredFeature.id)
+      : undefined;
+
+    expect(inferredFeature?.depthModel?.assumptions[0]?.source).toBe('import_default');
+    expect(inferredFeature?.depthModel?.warnings[0]?.code).toBe('depth_assumed_from_2d');
+    expect(inferredOperation?.depthProfile?.assumptions[0]?.label).toContain('Depth assumed');
+    expect(inferredOperation?.depthProfile?.floorLevel?.zMm).toBeLessThan(0);
   });
 
   it('marks approved plans with reviewer information', () => {
