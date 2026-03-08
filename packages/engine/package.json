@@ -18,5 +18,8 @@
   "dependencies": {
     "@cam/geometry2d": "file:../geometry2d",
     "@cam/shared": "file:../shared"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
   }
 }

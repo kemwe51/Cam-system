@@ -92,15 +92,23 @@ Important honesty boundary:
 
 ## Quick start
 
+Use Node `>=20.19.0` and npm `>=10` from the repository root. The repo now records `packageManager: npm@11.9.0` and the lockfile is verified in CI with `npm ci` so clean-checkout installs stay reproducible.
+
 ```bash
 npm install
 npm run build
 npm run test
 ```
 
+One-command verification after dependencies are installed:
+
+```bash
+npm run verify
+```
+
 ## Development
 
-Workspace packages resolve through their built `dist/` entries for runtime usage. Tests still execute the current workspace source files, while cross-workspace imports stay honest to the published package boundary by resolving through each package's `main` / `exports` entry. The stable developer workflow is:
+Workspace packages resolve through their built `dist/` entries for runtime usage. Tests still execute the current workspace source files, while cross-workspace imports stay honest to the published package boundary by resolving through each package's `main` / `exports` entry. Shared CLI tooling stays at the repo root, but every workspace now declares its own direct runtime imports and test-only imports so clean installs do not depend on lucky hoisting. The stable developer workflow is:
 
 1. install dependencies once with `npm install`
 2. build workspace libraries with `npm run build:packages`
@@ -128,11 +136,22 @@ npm run dev:web -- --host 0.0.0.0
 
 The web app defaults to `http://localhost:3001` for API requests.
 
+### Fresh-checkout reliability notes
+
+- Install from the monorepo root with `npm install` for local development or `npm ci` for CI/repro checks.
+- Runtime workspace dependencies must be declared in the owning workspace package, even when another workspace already brings in the same package transitively.
+- Test-only imports such as `vitest` are declared in the workspace that owns the tests instead of relying on the root package to hoist them.
+- Root scripts keep the build order explicit: shared libraries build first, then the API and web apps consume their published `dist/` exports.
+- `npm run verify` mirrors the CI guard after install by running the full root build plus workspace tests.
+
+The earlier `Cannot find module 'zod'` failure was a symptom of dependency-resolution drift rather than a bad TypeScript setting in `@cam/shared`: the repo mixed direct workspace imports with hoisted/transitive dependencies, so different clean-checkout installs could produce different effective module trees. The fix is to keep source/test imports declared in the package that uses them, record the expected Node/npm floor, and verify the lockfile with a clean install in CI.
+
 ### Root workspace scripts
 
 ```bash
 npm run build:packages   # build shared workspace libraries only
 npm run build            # build libraries, then api and web
+npm run verify           # build everything, then run workspace tests
 npm run test             # rebuild libraries, then run all workspace tests
 npm run test:workspaces  # run workspace tests without rebuilding first
 npm run dev:api          # start API from a clean checkout after building libraries
