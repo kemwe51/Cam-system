@@ -10,6 +10,7 @@ import {
   importSampleJson,
   listProjects,
   loadProjectRecord,
+  regenerateDraftOperations,
   reviewDraftPlan,
   saveProjectRecord,
 } from './api';
@@ -26,11 +27,11 @@ import {
 import type { ViewMode } from '@cam/model';
 import type { ViewOrientation } from './viewportScene';
 
-type BusyState = 'catalog' | 'import' | 'plan' | 'review' | 'approve' | 'save' | 'load' | null;
+type BusyState = 'catalog' | 'import' | 'plan' | 'regenerate' | 'review' | 'approve' | 'save' | 'load' | null;
 type BottomTab = 'risks' | 'checklist' | 'review' | 'console' | 'metadata';
 type LeftDockTab = 'model' | 'features' | 'operations' | 'tools';
-type OperationFilter = 'all' | 'enabled' | 'disabled' | 'manual' | 'automatic';
-type OperationGroupMode = 'setup' | 'feature';
+type OperationFilter = 'all' | 'enabled' | 'disabled' | 'manual' | 'generated' | 'edited';
+type OperationGroupMode = 'setup' | 'feature' | 'type';
 
 type OperationGroupView = {
   id: string;
@@ -55,7 +56,7 @@ const bottomTabs: Array<{ id: BottomTab; label: string }> = [
 
 const viewOrientations: ViewOrientation[] = ['fit', 'top', 'front', 'right', 'isometric'];
 const viewModes: ViewMode[] = ['shaded', 'wireframe', 'stock', 'features', 'operation_preview'];
-const operationFilters: OperationFilter[] = ['all', 'enabled', 'disabled', 'manual', 'automatic'];
+const operationFilters: OperationFilter[] = ['all', 'enabled', 'disabled', 'manual', 'generated', 'edited'];
 
 function panelSelectionClass(active: boolean): string {
   return active ? 'tree-item tree-item-selected' : 'tree-item';
@@ -69,7 +70,7 @@ function formatTimestamp(value: string | null | undefined): string {
   return new Date(value).toLocaleString();
 }
 
-function filterOperations<T extends { enabled: boolean; origin: 'automatic' | 'manual' }>(
+function filterOperations<T extends { enabled: boolean; origin: 'automatic' | 'manual'; source: 'generated' | 'manual' | 'edited' }>(
   operations: T[],
   operationFilter: OperationFilter,
 ): T[] {
@@ -80,10 +81,35 @@ function filterOperations<T extends { enabled: boolean; origin: 'automatic' | 'm
       return operations.filter((operation) => !operation.enabled);
     case 'manual':
       return operations.filter((operation) => operation.origin === 'manual');
-    case 'automatic':
-      return operations.filter((operation) => operation.origin === 'automatic');
+    case 'generated':
+      return operations.filter((operation) => operation.source === 'generated');
+    case 'edited':
+      return operations.filter((operation) => operation.source === 'edited');
     default:
       return operations;
+  }
+}
+
+function operationCategory(operation: {
+  origin: 'automatic' | 'manual';
+  kind: string;
+}): 'Contours' | 'Holes' | 'Pockets' | 'Slots' | 'Manual' | 'Other' {
+  if (operation.origin === 'manual') {
+    return 'Manual';
+  }
+  switch (operation.kind) {
+    case 'profile':
+    case 'chamfer':
+      return 'Contours';
+    case 'drill':
+      return 'Holes';
+    case 'pocket':
+    case 'face':
+      return 'Pockets';
+    case 'slot':
+      return 'Slots';
+    default:
+      return 'Other';
   }
 }
 
@@ -95,8 +121,12 @@ function operationGroups(
   const groups = new Map<string, OperationGroupView>();
 
   operations.forEach((operation) => {
-    const label = mode === 'setup' ? operation.setup : featureNames.get(operation.featureId) ?? operation.featureId;
-    const id = mode === 'setup' ? operation.setupId : operation.featureId;
+    const label = mode === 'setup'
+      ? operation.setup
+      : mode === 'feature'
+        ? featureNames.get(operation.featureId) ?? operation.featureId
+        : operationCategory(operation);
+    const id = mode === 'setup' ? operation.setupId : mode === 'feature' ? operation.featureId : operationCategory(operation);
     const existing = groups.get(id);
     if (existing) {
       existing.operationIds.push(operation.id);
@@ -113,11 +143,14 @@ function operationGroups(
   return [...groups.values()];
 }
 
-function operationWarnings(operation: { origin: 'automatic' | 'manual'; enabled: boolean; isDirty: boolean; notes: string }): string[] {
+function operationWarnings(operation: { origin: 'automatic' | 'manual'; source: 'generated' | 'manual' | 'edited'; enabled: boolean; isDirty: boolean; notes: string; frozen: boolean; warnings: Array<{ message: string }> }): string[] {
   return [
     ...(operation.origin === 'manual' ? ['manual override'] : []),
+    ...(operation.source === 'edited' ? ['edited'] : []),
     ...(!operation.enabled ? ['disabled'] : []),
     ...(operation.isDirty ? ['unsaved'] : []),
+    ...(operation.frozen ? ['frozen'] : []),
+    ...(operation.warnings.length > 0 ? [`${operation.warnings.length} planning warnings`] : []),
     ...(operation.notes.trim() ? ['notes'] : []),
   ];
 }
@@ -321,6 +354,31 @@ function App() {
         message: `Generated deterministic plan with ${plan.operations.length} operations.`,
       });
       setViewOrientation('fit');
+      setViewMode('operation_preview');
+      setActiveLeftTab('operations');
+      setActiveBottomTab('risks');
+    });
+  }
+
+  async function handleRegenerate(selectedFeatureIds: string[] = []): Promise<void> {
+    if (!state.draftPlan) {
+      return;
+    }
+    const draftPlan = state.draftPlan;
+
+    await withBusy('regenerate', async () => {
+      const plan = await regenerateDraftOperations(draftPlan, {
+        selectedFeatureIds,
+        preserveFrozenEdited: true,
+      });
+      dispatch({
+        type: 'regeneratedPlanLoaded',
+        plan,
+        message:
+          selectedFeatureIds.length > 0
+            ? `Regenerated generated operations for ${selectedFeatureIds.length} selected feature(s).`
+            : 'Regenerated generated operations for the current draft plan.',
+      });
       setViewMode('operation_preview');
       setActiveLeftTab('operations');
       setActiveBottomTab('risks');
@@ -544,27 +602,66 @@ function App() {
   }
 
   function renderFeaturesTree(): JSX.Element {
+    const extractedFeatureMap = new Map((state.currentModel?.extractedFeatures ?? []).map((feature) => [feature.mappedFeatureId, feature]));
     return state.draftPlan ? (
       <div className="tree-stack">
-        {state.draftPlan.features.map((feature) => (
-          <button
-            type="button"
-            key={feature.id}
-            className={panelSelectionClass(state.selectedEntity?.type === 'feature' && state.selectedEntity.id === feature.id)}
-            onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'feature', id: feature.id } })}
-          >
-            <strong>{feature.name}</strong>
-            <span>{feature.kind.replace('_', ' ')} · {feature.origin === 'geometry_inferred' ? 'inferred' : 'structured'}</span>
-            <small>
-              Qty {feature.quantity} · {feature.lengthMm.toFixed(1)} × {feature.widthMm.toFixed(1)} × {feature.depthMm.toFixed(1)} mm
-            </small>
-            <div className="chip-row">
-              {feature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
-              {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
-              {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
+        {state.currentModel?.extractedFeatures.length ? (
+          <section className="tree-folder">
+            <div className="tree-folder-header">
+              <strong>Extracted features</strong>
+              <span>{state.currentModel.extractedFeatures.length}</span>
             </div>
-          </button>
-        ))}
+            <div className="tree-stack">
+              {state.currentModel.extractedFeatures.map((feature) => (
+                <button
+                  type="button"
+                  key={feature.id}
+                  className={panelSelectionClass(state.selectedEntity?.type === 'feature' && state.selectedEntity.id === feature.mappedFeatureId)}
+                  onClick={() => dispatch({ type: 'selectEntity', entity: feature.mappedFeatureId ? { type: 'feature', id: feature.mappedFeatureId } : null })}
+                >
+                  <strong>{feature.label}</strong>
+                  <span>{feature.kind.replace('_', ' ')} · {(feature.confidence * 100).toFixed(0)}% confidence</span>
+                  <div className="chip-row">
+                    <span className="chip">extracted</span>
+                    {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
+                    {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        <section className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>Approved / planned features</strong>
+            <span>{state.draftPlan.features.length}</span>
+          </div>
+          <div className="tree-stack">
+            {state.draftPlan.features.map((feature) => {
+              const extracted = extractedFeatureMap.get(feature.id);
+              return (
+                <button
+                  type="button"
+                  key={feature.id}
+                  className={panelSelectionClass(state.selectedEntity?.type === 'feature' && state.selectedEntity.id === feature.id)}
+                  onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'feature', id: feature.id } })}
+                >
+                  <strong>{feature.name}</strong>
+                  <span>{feature.kind.replace('_', ' ')} · {feature.origin === 'geometry_inferred' ? 'inferred' : 'structured'}</span>
+                  <small>
+                    Qty {feature.quantity} · {feature.lengthMm.toFixed(1)} × {feature.widthMm.toFixed(1)} × {feature.depthMm.toFixed(1)} mm
+                  </small>
+                  <div className="chip-row">
+                    {feature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
+                    {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
+                    {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
+                    {extracted ? <span className="chip">{(extracted.confidence * 100).toFixed(0)}% extraction</span> : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
       </div>
     ) : (
       <p className="empty-state">Generate a deterministic plan to populate the feature list.</p>
@@ -590,7 +687,7 @@ function App() {
             ))}
           </div>
           <div className="chip-row">
-            {(['setup', 'feature'] as OperationGroupMode[]).map((mode) => (
+            {(['setup', 'feature', 'type'] as OperationGroupMode[]).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -630,10 +727,10 @@ function App() {
                         {operation.order + 1}. {operation.name}
                       </strong>
                       <span>
-                        {operation.origin} · {operation.enabled ? 'enabled' : 'disabled'} · {operation.setup}
+                        {operation.source} · {operation.enabled ? 'enabled' : 'disabled'} · {operation.setup}
                       </span>
                       <small>
-                        {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min · feature {featureNames.get(operation.featureId) ?? operation.featureId}
+                        {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min · {operation.toolClass?.replaceAll('_', ' ') ?? 'tooling TBD'} · feature {featureNames.get(operation.featureId) ?? operation.featureId}
                       </small>
                     </button>
                     <div className="chip-row">
@@ -643,8 +740,9 @@ function App() {
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'up', message: `Moved ${operation.name} earlier in the draft order.` })} disabled={index <= 0}>↑</button>
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'down', message: `Moved ${operation.name} later in the draft order.` })} disabled={index === filteredOperations.length - 1}>↓</button>
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: operation.id, message: `Duplicated ${operation.name} as a manual operation.` })}>⎘</button>
-                      <button type="button" className="icon-button" onClick={() => dispatch({ type: 'toggleOperation', operationId: operation.id, message: `${operation.enabled ? 'Disabled' : 'Enabled'} ${operation.name}.` })}>{operation.enabled ? 'On' : 'Off'}</button>
-                      <button type="button" className="icon-button" disabled={operation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: operation.id, message: `Deleted manual operation ${operation.name}.` })}>✕</button>
+                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'toggleOperation', operationId: operation.id, message: `${operation.enabled ? 'Disabled' : 'Enabled'} ${operation.name}.` })}>{operation.enabled ? 'On' : 'Off'}</button>
+                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'toggleOperationFreeze', operationId: operation.id, message: `${operation.frozen ? 'Unfroze' : 'Froze'} ${operation.name} for regeneration.` })}>{operation.frozen ? '🔒' : '🔓'}</button>
+                       <button type="button" className="icon-button" disabled={operation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: operation.id, message: `Deleted manual operation ${operation.name}.` })}>✕</button>
                     </div>
                   </div>
                 );
@@ -694,11 +792,15 @@ function App() {
 
   function renderInspector(): JSX.Element {
     if (selectedOperation && state.draftPlan) {
+      const linkedPreview = state.currentModel
+        ? state.currentModel.featureGeometryLinks.find((link) => link.featureId === selectedOperation.featureId)
+        : null;
       return (
         <div className="inspector-form">
           <div className="inspector-header-row">
-            <span className="chip">{selectedOperation.origin}</span>
+            <span className="chip">{selectedOperation.source}</span>
             {selectedOperation.isDirty ? <span className="chip chip-dirty">Unsaved op change</span> : null}
+            {selectedOperation.frozen ? <span className="chip">Frozen for regeneration</span> : null}
           </div>
           <label>
             <span>Operation name</span>
@@ -750,9 +852,23 @@ function App() {
             <input type="checkbox" checked={selectedOperation.enabled} onChange={() => dispatch({ type: 'toggleOperation', operationId: selectedOperation.id, message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.` })} />
             <span>Enabled for the draft sequence</span>
           </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={selectedOperation.frozen} onChange={() => dispatch({ type: 'toggleOperationFreeze', operationId: selectedOperation.id, message: `${selectedOperation.frozen ? 'Unfroze' : 'Froze'} ${selectedOperation.name} for regeneration.` })} />
+            <span>Freeze manual/edited state during regeneration</span>
+          </label>
           <div className="chip-row">
             {operationWarnings(selectedOperation).map((warning) => <span key={`${selectedOperation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
           </div>
+          {selectedOperation.warnings.length > 0 ? (
+            <ul className="detail-list">
+              {selectedOperation.warnings.map((warning) => <li key={warning.code}>{warning.severity.toUpperCase()}: {warning.message}</li>)}
+            </ul>
+          ) : null}
+          {selectedOperation.assumptions.length > 0 ? (
+            <ul className="detail-list">
+              {selectedOperation.assumptions.map((assumption) => <li key={assumption.id}>{assumption.label}: {assumption.description}</li>)}
+            </ul>
+          ) : null}
           <div className="inspector-actions">
             <button type="button" className="secondary-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: selectedOperation.id, message: `Duplicated ${selectedOperation.name} as a manual operation.` })}>Duplicate</button>
             <button type="button" className="secondary-button" disabled={selectedOperation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: selectedOperation.id, message: `Deleted manual operation ${selectedOperation.name}.` })}>Delete manual op</button>
@@ -762,6 +878,9 @@ function App() {
             <div><dt>Feature</dt><dd>{selectedFeature?.name ?? selectedOperation.featureId}</dd></div>
             <div><dt>Tool</dt><dd>{selectedOperation.toolName}</dd></div>
             <div><dt>Status</dt><dd>{selectedOperation.enabled ? 'Enabled' : 'Disabled'}</dd></div>
+            <div><dt>Tool class</dt><dd>{selectedOperation.toolClass?.replaceAll('_', ' ') ?? 'Not set'}</dd></div>
+            <div><dt>Preview summary</dt><dd>{linkedPreview ? `${linkedPreview.sourceGeometryIds.length} source refs linked` : 'Generic preview only'}</dd></div>
+            <div><dt>Inference</dt><dd>{selectedOperation.machiningIntent?.rationale ?? 'Manual operation'}</dd></div>
           </dl>
         </div>
       );
@@ -783,6 +902,7 @@ function App() {
             <div><dt>Related ops</dt><dd>{orderedOperations.filter((operation) => operation.featureId === selectedFeature.id).length}</dd></div>
             <div><dt>Confidence</dt><dd>{(selectedFeature.confidence * 100).toFixed(0)}%</dd></div>
             <div><dt>Inference</dt><dd>{selectedFeature.inferenceMethod ?? 'Structured input'}</dd></div>
+            <div><dt>Machining intent</dt><dd>{selectedFeature.machiningIntent?.classification.replace('_', ' ') ?? 'Not classified'}</dd></div>
             {selectedExtractedFeature ? <div><dt>Extracted kind</dt><dd>{selectedExtractedFeature.kind.replace('_', ' ')}</dd></div> : null}
           </dl>
           <ul className="detail-list">{selectedFeature.notes.map((note) => <li key={note}>{note}</li>)}</ul>
@@ -818,7 +938,10 @@ function App() {
               </select>
             </label>
           ) : null}
-          <button type="button" onClick={() => dispatch({ type: 'addManualOperation', featureId: selectedFeature.id, message: `Added a manual operation for ${selectedFeature.name}.` })}>Add manual operation</button>
+          <div className="inspector-actions">
+            <button type="button" onClick={() => dispatch({ type: 'addManualOperation', featureId: selectedFeature.id, message: `Added a manual operation for ${selectedFeature.name}.` })}>Add manual operation</button>
+            <button type="button" className="secondary-button" onClick={() => void handleRegenerate([selectedFeature.id])} disabled={busy !== null}>Generate operations from selected feature</button>
+          </div>
         </div>
       );
     }
@@ -983,14 +1106,15 @@ function App() {
     <main className="workbench-shell v2-shell">
       <header className="app-bar">
         <div className="app-bar-project">
-          <p className="eyebrow">DXF & 2D Geometry Pipeline v4</p>
+          <p className="eyebrow">CAM Operations v5</p>
           <h1>{state.sample?.partName ?? state.currentImportSession?.source.filename ?? 'CAM project session'}</h1>
           <p>
             Rev {state.sample?.revision ?? '—'} · Source {state.currentImportSession?.source.type ?? state.currentProject?.sourceType ?? 'none'} · Model {state.currentModel?.status ?? 'none'} · Deterministic planning authoritative · AI advisory only
           </p>
         </div>
         <div className="app-bar-actions">
-          <button onClick={() => void handlePlan()} disabled={!state.currentImportSession?.deterministicPartInput || busy !== null}>{busy === 'plan' ? 'Planning…' : 'Derive plan'}</button>
+          <button onClick={() => void handlePlan()} disabled={!state.currentImportSession?.deterministicPartInput || busy !== null}>{busy === 'plan' ? 'Planning…' : 'Generate operations'}</button>
+          <button className="secondary-button" onClick={() => void handleRegenerate()} disabled={!state.draftPlan || busy !== null}>{busy === 'regenerate' ? 'Regenerating…' : 'Regenerate generated ops'}</button>
           <button onClick={() => void handleReview()} disabled={!state.draftPlan || busy !== null}>{busy === 'review' ? 'Reviewing…' : 'Review'}</button>
           <button onClick={() => void handleSaveProject()} disabled={!state.draftPlan || busy !== null}>{busy === 'save' ? 'Saving…' : 'Save project'}</button>
           <button onClick={() => void handleApprove()} disabled={!state.draftPlan || busy !== null}>{busy === 'approve' ? 'Approving…' : 'Approve'}</button>
@@ -1057,7 +1181,7 @@ function App() {
           <div className="panel-header">
             <div>
               <p className="panel-label">Viewport</p>
-              <h2>Source/model/features/operation preview</h2>
+              <h2>Source geometry, extracted features, and operation preview</h2>
             </div>
             {state.currentModel ? <span className="chip">{viewMode.replace('_', ' ')}</span> : null}
           </div>

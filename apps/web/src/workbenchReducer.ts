@@ -42,10 +42,12 @@ export type WorkbenchAction =
   | { type: 'projectCatalogLoaded'; projects: ProjectRecord[]; message: string }
   | { type: 'projectLoaded'; project: ProjectRecord; message: string }
   | { type: 'projectSaved'; project: ProjectRecord; message: string }
+  | { type: 'regeneratedPlanLoaded'; plan: DraftCamPlan; message: string }
   | { type: 'selectEntity'; entity: SelectedEntity | null }
   | { type: 'updateOperation'; operationId: string; changes: Partial<EditableOperationFields>; message: string }
   | { type: 'moveOperation'; operationId: string; direction: 'up' | 'down'; message: string }
   | { type: 'toggleOperation'; operationId: string; message: string }
+  | { type: 'toggleOperationFreeze'; operationId: string; message: string }
   | { type: 'addManualOperation'; featureId: string; message: string }
   | { type: 'reclassifyFeature'; featureId: string; nextKind: 'contour' | 'pocket' | 'slot' | 'hole_group' | 'ignore' | 'unclassified'; message: string }
   | { type: 'duplicateOperation'; operationId: string; message: string }
@@ -85,7 +87,17 @@ function orderedOperations(operations: Operation[]): Operation[] {
     .map((operation, index) => ({
       ...operation,
       order: index,
+      source:
+        operation.origin === 'manual'
+          ? 'manual'
+          : operation.isDirty && operation.source !== 'generated'
+            ? operation.source
+            : operation.source ?? 'generated',
     }));
+}
+
+function editedSource(operation: Operation): Operation['source'] {
+  return operation.origin === 'manual' ? 'manual' : 'edited';
 }
 
 function sumEnabledMinutes(operations: Operation[]): number {
@@ -229,8 +241,14 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
     estimatedMinutes: Math.max(baseOperation?.estimatedMinutes ?? relatedOperation?.estimatedMinutes ?? 1.5, 0.5),
     enabled: true,
     origin: 'manual',
+    source: 'manual',
     order: plan.operations.length,
     isDirty: true,
+    frozen: true,
+    links: baseOperation?.links ?? [{ featureId: feature.id, sourceGeometryRefs: feature.sourceGeometryRefs }],
+    warnings: baseOperation?.warnings ?? [],
+    assumptions: baseOperation?.assumptions ?? [],
+    machiningIntent: feature.machiningIntent,
   };
 }
 
@@ -399,6 +417,17 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         },
         action.message,
       );
+    case 'regeneratedPlanLoaded':
+      return appendConsole(
+        {
+          ...state,
+          ...pushHistory(state, state.draftPlan ?? action.plan),
+          draftPlan: normalizeSavedPlan(action.plan),
+          review: null,
+          dirty: true,
+        },
+        action.message,
+      );
     case 'selectEntity':
       return {
         ...state,
@@ -421,18 +450,19 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         const nextSetupId = action.changes.setupId ?? operation.setupId;
         const nextSetup = action.changes.setup ?? getSetupLabel(draftPlan.setups, nextSetupId, operation.setup);
 
-        return {
-          ...operation,
-          ...action.changes,
+          return {
+            ...operation,
+            ...action.changes,
           featureId: nextFeatureId,
           setupId: nextSetupId,
           setup: nextSetup,
-          groupId: buildOperationGroupId(nextSetupId, nextFeatureId),
-          toolId: nextToolId,
-          toolName: nextTool?.name ?? operation.toolName,
-          isDirty: true,
-        };
-      });
+            groupId: buildOperationGroupId(nextSetupId, nextFeatureId),
+            toolId: nextToolId,
+            toolName: nextTool?.name ?? operation.toolName,
+            source: editedSource(operation),
+            isDirty: true,
+          };
+        });
 
       return appendConsole(
         {
@@ -458,12 +488,16 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         return state;
       }
 
-      const nextOperations = [...currentOperations];
+       const nextOperations = [...currentOperations];
       const [operation] = nextOperations.splice(currentIndex, 1);
       if (!operation) {
         return state;
       }
-      nextOperations.splice(targetIndex, 0, { ...operation, isDirty: true });
+       nextOperations.splice(targetIndex, 0, {
+         ...operation,
+         source: editedSource(operation),
+         isDirty: true,
+       });
 
       return appendConsole(
         {
@@ -487,6 +521,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           ? {
               ...operation,
               enabled: !operation.enabled,
+              source: editedSource(operation),
               isDirty: true,
             }
           : operation,
@@ -498,6 +533,34 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             state,
             nextOperations,
             'Operation enablement changed in the draft. Review machining coverage before release.',
+          ),
+          selectedEntity: { type: 'operation', id: action.operationId },
+        },
+        action.message,
+      );
+    }
+    case 'toggleOperationFreeze': {
+      if (!state.draftPlan) {
+        return state;
+      }
+
+      const nextOperations = state.draftPlan.operations.map((operation) =>
+        operation.id === action.operationId
+          ? {
+              ...operation,
+              frozen: !operation.frozen,
+              source: editedSource(operation),
+              isDirty: true,
+            }
+          : operation,
+      );
+
+      return appendConsole(
+        {
+          ...applyDraftEdit(
+            state,
+            nextOperations,
+            'Operation freeze state changed in the draft. Regeneration must be reviewed before release.',
           ),
           selectedEntity: { type: 'operation', id: action.operationId },
         },
@@ -559,6 +622,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           : {
               ...operation,
               enabled: action.nextKind === 'ignore' || action.nextKind === 'unclassified' ? false : operation.enabled,
+              source: 'edited' as const,
               isDirty: true,
             },
       );

@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { reviewDraftPlan, type ReviewSupplementalContext } from '@cam/ai';
 import { importedModelSchema, projectRecordSchema, type ImportSessionRecord } from '@cam/model';
-import { approvePlan, planPart, samplePartInput } from '@cam/engine';
+import { approvePlan, planPart, regenerateDraftPlan, samplePartInput } from '@cam/engine';
 import { defaultImporterRegistry, type ImportFormat, type ImportResult, type ImportedPartSource } from '@cam/importers';
 import {
   approvalRequestSchema,
@@ -65,6 +65,12 @@ const reviewRequestSchema = z.object({
     project: z.custom<ReviewSupplementalContext['project']>().optional(),
     model: importedModelSchema.optional(),
   }).optional(),
+});
+
+const regenerateOperationsRequestSchema = z.object({
+  plan: draftCamPlanSchema,
+  selectedFeatureIds: z.array(z.string().min(1)).default([]),
+  preserveFrozenEdited: z.boolean().default(true),
 });
 
 function corsHeaders(requestOrigin?: string): Record<string, string> {
@@ -235,6 +241,26 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
       if (request.method === 'POST' && url.pathname === '/plan') {
         const body = partInputSchema.parse(await readJson(request));
         sendJson(response, 200, planPart(body), requestOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/operations/generate') {
+        const body = partInputSchema.parse(await readJson(request));
+        sendJson(response, 200, planPart(body), requestOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/operations/regenerate') {
+        const body = regenerateOperationsRequestSchema.parse(await readJson(request));
+        sendJson(
+          response,
+          200,
+          regenerateDraftPlan(body.plan, {
+            selectedFeatureIds: body.selectedFeatureIds,
+            preserveFrozenEdited: body.preserveFrozenEdited,
+          }),
+          requestOrigin,
+        );
         return;
       }
 

@@ -54,9 +54,11 @@ export function buildScenePipeline(
   const geometryEntities = model.entities.filter((entity) => entity.kind === 'source_geometry');
   const featureEntities = model.entities.filter((entity) => entity.kind === 'feature');
   const featureLink = selectedFeatureId ? model.featureGeometryLinks.find((link) => link.featureId === selectedFeatureId) : undefined;
+  const selectedPreview = selectedOperationId ? operationPreviews.find((preview) => preview.operationId === selectedOperationId) : undefined;
   const selectionEntity = geometryEntities.find((entity) => entity.id === selectedGeometryId)
     ?? featureEntities.find((entity) => entity.featureId === selectedFeatureId)
     ?? (featureLink?.sourceGeometryIds[0] ? geometryEntities.find((entity) => entity.id === featureLink.sourceGeometryIds[0]) : null)
+    ?? (selectedPreview?.entityId ? model.entities.find((entity) => entity.id === selectedPreview.entityId) : null)
     ?? model.entities.find((entity) => entity.operationId === selectedOperationId)
     ?? null;
 

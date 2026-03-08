@@ -43,6 +43,7 @@ describe('workbenchReducer', () => {
 
     expect(nextState.draftPlan?.operations[0]?.enabled).toBe(false);
     expect(nextState.draftPlan?.operations[0]?.isDirty).toBe(true);
+    expect(nextState.draftPlan?.operations[0]?.source).toBe('edited');
     expect(nextState.dirty).toBe(true);
   });
 
@@ -163,5 +164,25 @@ describe('workbenchReducer', () => {
     expect(reclassified.draftPlan?.features.find((feature) => feature.id === featureId)?.kind).toBe('slot');
     expect(reclassified.draftPlan?.features.find((feature) => feature.id === featureId)?.classificationState).toBe('manual_override');
     expect(reclassified.dirty).toBe(true);
+  });
+
+  it('freezes edited operations and accepts regenerated plans into dirty draft state', () => {
+    const state = stateWithPlan();
+    const operationId = state.draftPlan!.operations[0]!.id;
+
+    const frozen = workbenchReducer(state, {
+      type: 'toggleOperationFreeze',
+      operationId,
+      message: 'freeze',
+    });
+    expect(frozen.draftPlan?.operations.find((operation) => operation.id === operationId)?.frozen).toBe(true);
+
+    const regenerated = workbenchReducer(frozen, {
+      type: 'regeneratedPlanLoaded',
+      plan: frozen.draftPlan!,
+      message: 'regenerated',
+    });
+    expect(regenerated.dirty).toBe(true);
+    expect(regenerated.draftPlan?.operations[0]?.order).toBe(0);
   });
 });
