@@ -1,20 +1,28 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { reviewDraftPlan } from '@cam/ai';
+import { randomUUID } from 'node:crypto';
+import { reviewDraftPlan, type ReviewSupplementalContext } from '@cam/ai';
+import { importedModelSchema, projectRecordSchema, type ImportSessionRecord } from '@cam/model';
 import { approvePlan, planPart, samplePartInput } from '@cam/engine';
+import { defaultImporterRegistry, type ImportFormat, type ImportResult, type ImportedPartSource } from '@cam/importers';
 import {
   approvalRequestSchema,
   partInputSchema,
   projectDraftSchema,
-  reviewRequestSchema,
-  type ProjectSummary,
+  draftCamPlanSchema,
 } from '@cam/shared';
-import { ZodError } from 'zod';
-import { createFileProjectRepository, type ProjectRepository } from './draft-store.js';
+import { ZodError, z } from 'zod';
+import {
+  createFileImportSessionRepository,
+  createFileProjectRepository,
+  type ImportSessionRepository,
+  type ProjectRepository,
+} from './draft-store.js';
 
 export type CamApiServerOptions = {
   port?: number;
   projectRepository?: ProjectRepository;
+  importSessionRepository?: ImportSessionRepository;
 };
 
 const defaultPort = Number(process.env.PORT ?? 3001);
@@ -32,6 +40,32 @@ const allowedOrigins = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
+
+const importJsonRequestSchema = z.object({
+  sourceId: z.string().min(1).optional(),
+  fileName: z.string().min(1).default('structured-part.json'),
+  mediaType: z.string().min(1).default('application/json'),
+  useSample: z.boolean().default(false),
+  content: z.string().min(1).optional(),
+  partInput: partInputSchema.optional(),
+});
+
+const importMetadataRequestSchema = z.object({
+  sourceId: z.string().min(1).optional(),
+  fileName: z.string().min(1),
+  mediaType: z.string().min(1).optional(),
+  content: z.string().default(''),
+  sizeBytes: z.number().int().nonnegative().optional(),
+});
+
+const reviewRequestSchema = z.object({
+  plan: draftCamPlanSchema,
+  context: z.object({
+    importSession: z.custom<ReviewSupplementalContext['importSession']>().optional(),
+    project: z.custom<ReviewSupplementalContext['project']>().optional(),
+    model: importedModelSchema.optional(),
+  }).optional(),
+});
 
 function corsHeaders(requestOrigin?: string): Record<string, string> {
   const origin = requestOrigin && allowedOrigins.has(requestOrigin)
@@ -83,8 +117,40 @@ async function readJson(request: import('node:http').IncomingMessage): Promise<u
   return payload.length === 0 ? {} : JSON.parse(payload);
 }
 
+function importSessionId(prefix: ImportFormat) {
+  return `import-${prefix}-${randomUUID()}`;
+}
+
+function importerSource(format: ImportFormat, body: z.infer<typeof importJsonRequestSchema> | z.infer<typeof importMetadataRequestSchema>, content: string): ImportedPartSource {
+  const sizeBytes = 'sizeBytes' in body ? body.sizeBytes : Buffer.byteLength(content, 'utf8');
+  const source: ImportedPartSource = {
+    sourceId: body.sourceId ?? importSessionId(format),
+    fileName: body.fileName,
+    fileType: format,
+    mediaType: body.mediaType ?? (format === 'json' ? 'application/json' : 'application/octet-stream'),
+    content,
+    ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+  };
+  return source;
+}
+
+function toImportSession(result: ImportResult): ImportSessionRecord {
+  const timestamp = new Date().toISOString();
+  return {
+    id: result.source.id,
+    source: result.source,
+    importStatus: result.importStatus,
+    warnings: result.warnings,
+    importedModel: result.importedModel,
+    deterministicPartInput: result.deterministicPartInput,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 export function createCamApiServer(options: CamApiServerOptions = {}) {
   const projectRepository = options.projectRepository ?? createFileProjectRepository();
+  const importSessionRepository = options.importSessionRepository ?? createFileImportSessionRepository();
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -118,23 +184,51 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
       }
 
       if (request.method === 'GET' && url.pathname === '/projects') {
-        const projects: ProjectSummary[] = await projectRepository.list();
-        sendJson(response, 200, { projects }, requestOrigin);
+        sendJson(response, 200, { projects: await projectRepository.list() }, requestOrigin);
+        return;
+      }
+
+      const importId = matchRoute(url.pathname, 'imports');
+      if (request.method === 'GET' && importId) {
+        const importSession = await importSessionRepository.load(importId);
+        if (!importSession) {
+          sendJson(response, 404, { error: 'Import session not found', importId }, requestOrigin);
+          return;
+        }
+        sendJson(response, 200, importSession, requestOrigin);
         return;
       }
 
       const projectId = matchRoute(url.pathname, 'projects') ?? matchRoute(url.pathname, 'drafts');
       if (request.method === 'GET' && projectId) {
-        const draft = await projectRepository.load(projectId);
-        if (!draft) {
+        const project = await projectRepository.load(projectId);
+        if (!project) {
           sendJson(response, 404, {
-            error: 'Draft not found',
+            error: 'Project not found',
             projectId,
           }, requestOrigin);
           return;
         }
 
-        sendJson(response, 200, draft, requestOrigin);
+        sendJson(response, 200, project, requestOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/imports/json') {
+        const body = importJsonRequestSchema.parse(await readJson(request));
+        const partInput = body.useSample ? samplePartInput : body.partInput ?? partInputSchema.parse(JSON.parse(body.content ?? '{}'));
+        const result = await defaultImporterRegistry.importPart(importerSource('json', body, JSON.stringify(partInput)));
+        const session = await importSessionRepository.save(toImportSession(result));
+        sendJson(response, 201, session, requestOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && (url.pathname === '/imports/dxf' || url.pathname === '/imports/step')) {
+        const format = url.pathname.endsWith('/dxf') ? 'dxf' : 'step';
+        const body = importMetadataRequestSchema.parse(await readJson(request));
+        const result = await defaultImporterRegistry.importPart(importerSource(format, body, body.content));
+        const session = await importSessionRepository.save(toImportSession(result));
+        sendJson(response, 201, session, requestOrigin);
         return;
       }
 
@@ -146,10 +240,16 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
 
       if (request.method === 'POST' && url.pathname === '/review') {
         const body = reviewRequestSchema.parse(await readJson(request));
-        const reviewOptions = {
-          ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
-          ...(process.env.OPENAI_MODEL ? { model: process.env.OPENAI_MODEL } : {}),
-        };
+        const reviewOptions: Parameters<typeof reviewDraftPlan>[1] = {};
+        if (process.env.OPENAI_API_KEY) {
+          reviewOptions.apiKey = process.env.OPENAI_API_KEY;
+        }
+        if (process.env.OPENAI_MODEL) {
+          reviewOptions.model = process.env.OPENAI_MODEL;
+        }
+        if (body.context) {
+          reviewOptions.context = body.context as ReviewSupplementalContext;
+        }
         const review = await reviewDraftPlan(body.plan, reviewOptions);
         sendJson(response, 200, review, requestOrigin);
         return;
@@ -162,16 +262,21 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
       }
 
       if (request.method === 'PUT' && projectId) {
-        const body = projectDraftSchema.parse(await readJson(request));
-        if (body.projectId !== projectId) {
+        const body = await readJson(request);
+        const identifier = z.object({ projectId: z.string().min(1) }).safeParse(body);
+        if (!identifier.success) {
+          throw new ZodError(identifier.error.issues);
+        }
+        const requestProjectId = identifier.data.projectId;
+        if (requestProjectId !== projectId) {
           sendJson(response, 400, {
-            error: 'Draft project id does not match request path',
+            error: 'Project id does not match request path',
             projectId,
           }, requestOrigin);
           return;
         }
 
-        sendJson(response, 200, await projectRepository.save(projectId, body), requestOrigin);
+        sendJson(response, 200, await projectRepository.save(projectId, body as Parameters<typeof projectRepository.save>[1]), requestOrigin);
         return;
       }
 
@@ -208,7 +313,6 @@ export function createCamApiServer(options: CamApiServerOptions = {}) {
   };
 }
 
-// Only start the HTTP listener when this module is executed directly.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { server, port } = createCamApiServer();
   server.listen(port, () => {

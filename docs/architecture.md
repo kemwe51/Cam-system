@@ -3,11 +3,12 @@
 ## Monorepo layout
 
 - `apps/web`: React + Vite CAM workbench optimized for mobile usability but arranged for desktop-class CAM authoring
-- `apps/api`: minimal Node HTTP API exposing planning, persistence, review, and approval routes
-- `packages/shared`: shared Zod schemas, project metadata, machine/setup/tool catalog foundations
+- `apps/api`: minimal Node HTTP API exposing import, planning, persistence, review, and approval routes
+- `packages/shared`: shared Zod schemas, deterministic planning contracts, machine/setup/tool catalog foundations
+- `packages/model`: geometry/model pipeline contracts shared by importers, API, viewport, and review context
 - `packages/engine`: deterministic planning logic for structured JSON part input
 - `packages/ai`: advisory OpenAI Responses API shell returning structured review output only
-- `packages/importers`: importer interfaces plus JSON importer and honest DXF/STEP placeholders
+- `packages/importers`: importer interfaces, registry, JSON importer, and honest DXF/STEP workflow placeholders
 - `examples`: sample JSON part input used by the demo flow
 
 ## Responsibility split
@@ -22,70 +23,141 @@ The deterministic engine owns:
 - cycle time estimation
 - approval state initialization
 
-The AI package is advisory only. It reviews a deterministic draft plan plus manual override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
+The model/import pipeline owns:
 
-## Workbench v2 UI structure
+- source file metadata
+- derived model/session contracts
+- source/model/view entity ids
+- feature-to-geometry links
+- operation preview contracts
+- project/import/revision persistence records
 
-The web app now uses a persistent CAM-style layout:
+The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
 
-- **Top application bar** for session identity, plan/review/save/approve actions, view presets, and dirty state
-- **Left dock** with tabs for model tree, features, operations, and tools
-- **Center viewport** showing derived stock, feature, selection, and operation overlays
-- **Right inspector** for the selected feature, operation, or tool
-- **Bottom panel** for risks, checklist, AI review, console, and project metadata
+## Geometry & Import Pipeline v3
 
-## Derived viewport pipeline
+`@cam/model` is the internal contract boundary between importers, planning, persistence, and the viewport.
 
-The viewport scene is still derived from structured input and draft state. The current pipeline separates:
+Current model vocabulary includes:
 
-- stock body
-- derived feature bodies
-- selection overlay
-- operation overlays
-- section-ready clipping-plane boundary
+- `ModelSource`
+- `ImportedModel`
+- `ModelEntity`
+- `ModelView`
+- `ModelBounds`
+- `ModelLayer`
+- `ModelSelection`
+- `DerivedGeometryFragment`
+- `FeatureGeometryLink`
+- `OperationPreview`
+- `ViewPreset`
+- `ViewMode`
 
-This is explicit derived visualization only. It is **not** a CAD kernel, **not** verified solid geometry, and **not** a toolpath preview.
+Important boundary:
 
-## Persistence v2
+- this is **not** a CAD kernel
+- this is **not** a B-Rep
+- current geometry is derived from structured source metadata
+- DXF/STEP remain placeholder workflow sessions until real parsing exists
 
-The API now exposes an explicit project repository interface with a file-based implementation. Saved projects include metadata for:
+## Import workflow
 
-- project id
-- part id
-- part name
-- revision
-- updated at
-- approval state
+The API now distinguishes:
+
+- **imported source**: file type/name/media metadata
+- **derived model**: source/model/view entities and derived geometry fragments
+- **draft project**: current mutable workbench state and metadata
+- **deterministic plan**: authoritative engine output and manual overrides under review
 
 Current routes:
 
+- `POST /imports/json`
+- `POST /imports/dxf`
+- `POST /imports/step`
+- `GET /imports/:id`
 - `GET /projects`
 - `GET /projects/:projectId`
 - `PUT /projects/:projectId`
-- legacy `drafts/:projectId` compatibility routes
+- legacy `GET /drafts/:projectId`
+- `POST /plan`
+- `POST /review`
+- `POST /approve`
 
-## Import adapter boundary
+## Persistence v3
 
-`packages/importers` defines the boundary for future real file ingestion.
+The file-backed API repository now stores:
 
-Current state:
+- `ImportSessionRecord`
+- `ProjectRecord`
+- `ProjectRevisionRecord`
 
-- JSON import works against the existing structured schema
-- DXF importer returns `not_implemented`
-- STEP importer returns `not_implemented`
+Saved projects now track:
 
-Future real import work should map external geometry into deterministic part/feature structures before any planning step claims machining readiness.
+- project id
+- revision counter
+- source import id
+- source type
+- source filename
+- derived model metadata
+- plan metadata
+- approval state
+- updated at
+- warnings
+- lightweight revision history
+
+This is still intentionally simple. The repo does not yet implement multi-user locking, branch/merge semantics, or immutable artifact promotion.
+
+## Workbench v3 UI structure
+
+The web app now uses a persistent CAM-style layout with an explicit import-first workflow:
+
+- **Top application bar** for import/project identity, derive plan/review/save/approve actions, undo/redo, and view controls
+- **Left dock** with model/import tree, features, operations, and tools
+- **Center viewport** showing source/model, stock, feature, selection, and operation preview layers
+- **Right inspector** for the selected feature, operation, or tool
+- **Bottom panel** for risks, checklist, AI review, console, and metadata/revision summary
+
+Manual programming still remains practical and reducer-driven:
+
+- rename/edit strategy/notes/setup/tool
+- enable/disable
+- duplicate manual operations
+- delete manual operations
+- reorder operations
+- relink operation to a different feature
+- local undo/redo
+
+## Viewport pipeline
+
+The viewport scene builder now consumes `@cam/model` types and separates:
+
+- source/model layer
+- stock layer
+- feature layer
+- selection layer
+- operation preview layer
+
+Operation previews are intentionally honest overlays only:
+
+- contour/profile → contour path markers
+- pocket/face/slot → region overlays
+- drill → point/cylinder markers
+- chamfer → edge markers
+- engrave → text markers
+- unlinked/manual cases → generic preview badge
+
+These are **not** toolpaths.
 
 ## Current boundaries
 
 This repository does not yet implement:
 
-- DXF machining
-- STEP machining
+- real DXF parsing
+- real STEP parsing
 - a geometry kernel or B-Rep modeler
 - machine simulation
 - collision checking
-- real toolpath generation
+- true toolpath planning
 - postprocessors or G-code output
 - production-grade tool assemblies and cutting data
 

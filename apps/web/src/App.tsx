@@ -4,24 +4,28 @@ import './App.css';
 import {
   approveDraftPlan,
   generateDraftPlan,
+  importJsonText,
+  importPlaceholder,
+  importSampleJson,
   listProjects,
-  loadProjectDraft,
-  loadSamplePart,
+  loadProjectRecord,
   reviewDraftPlan,
-  saveProjectDraft,
+  saveProjectRecord,
 } from './api';
 import { Viewport3D } from './Viewport3D';
 import {
-  buildProjectDraft,
+  buildProjectRecord,
   createProjectId,
   getOrderedOperations,
   initialWorkbenchState,
   resolveSelectedFeatureId,
+  unsavedOperationSummary,
   workbenchReducer,
 } from './workbenchReducer';
-import type { ViewMode, ViewOrientation } from './viewportScene';
+import type { ViewMode } from '@cam/model';
+import type { ViewOrientation } from './viewportScene';
 
-type BusyState = 'sample' | 'catalog' | 'plan' | 'review' | 'approve' | 'save' | 'load' | null;
+type BusyState = 'catalog' | 'import' | 'plan' | 'review' | 'approve' | 'save' | 'load' | null;
 type BottomTab = 'risks' | 'checklist' | 'review' | 'console' | 'metadata';
 type LeftDockTab = 'model' | 'features' | 'operations' | 'tools';
 type OperationFilter = 'all' | 'enabled' | 'disabled' | 'manual' | 'automatic';
@@ -49,7 +53,7 @@ const bottomTabs: Array<{ id: BottomTab; label: string }> = [
 ];
 
 const viewOrientations: ViewOrientation[] = ['fit', 'top', 'front', 'right', 'isometric'];
-const viewModes: ViewMode[] = ['shaded', 'wireframe', 'stock_only', 'features', 'operations'];
+const viewModes: ViewMode[] = ['shaded', 'wireframe', 'stock', 'features', 'operation_preview'];
 const operationFilters: OperationFilter[] = ['all', 'enabled', 'disabled', 'manual', 'automatic'];
 
 function panelSelectionClass(active: boolean): string {
@@ -108,17 +112,29 @@ function operationGroups(
   return [...groups.values()];
 }
 
+function operationWarnings(operation: { origin: 'automatic' | 'manual'; enabled: boolean; isDirty: boolean; notes: string }): string[] {
+  return [
+    ...(operation.origin === 'manual' ? ['manual override'] : []),
+    ...(!operation.enabled ? ['disabled'] : []),
+    ...(operation.isDirty ? ['unsaved'] : []),
+    ...(operation.notes.trim() ? ['notes'] : []),
+  ];
+}
+
 function App() {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<BusyState>(null);
   const [viewOrientation, setViewOrientation] = useState<ViewOrientation>('fit');
   const [viewMode, setViewMode] = useState<ViewMode>('shaded');
-  const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>('review');
-  const [activeLeftTab, setActiveLeftTab] = useState<LeftDockTab>('operations');
+  const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>('metadata');
+  const [activeLeftTab, setActiveLeftTab] = useState<LeftDockTab>('model');
   const [operationFilter, setOperationFilter] = useState<OperationFilter>('all');
   const [operationGroupMode, setOperationGroupMode] = useState<OperationGroupMode>('setup');
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const [jsonImportText, setJsonImportText] = useState<string>('');
+  const [jsonFileName, setJsonFileName] = useState<string>('structured-part.json');
+  const [placeholderFileName, setPlaceholderFileName] = useState<string>('incoming-model.dxf');
 
   useEffect(() => {
     void initializeWorkbench();
@@ -162,6 +178,7 @@ function App() {
     () => (state.sample ? createProjectId(state.sample) : state.draftPlan ? createProjectId(state.draftPlan.part) : null),
     [state.draftPlan, state.sample],
   );
+  const unsavedSummary = useMemo(() => unsavedOperationSummary(state.draftPlan), [state.draftPlan]);
 
   async function withBusy(nextBusy: BusyState, action: () => Promise<void>): Promise<void> {
     try {
@@ -177,16 +194,11 @@ function App() {
 
   async function initializeWorkbench(): Promise<void> {
     await withBusy('catalog', async () => {
-      const [projectCatalog, sample] = await Promise.all([listProjects(), loadSamplePart()]);
+      const projectCatalog = await listProjects();
       dispatch({
         type: 'projectCatalogLoaded',
         projects: projectCatalog.projects,
         message: `Loaded ${projectCatalog.projects.length} saved project sessions from the API repository.`,
-      });
-      dispatch({
-        type: 'sampleLoaded',
-        sample,
-        message: `Loaded structured sample part ${sample.partId}.`,
       });
       setSelectedProjectId(projectCatalog.projects[0]?.projectId ?? '');
     });
@@ -202,31 +214,65 @@ function App() {
     setSelectedProjectId((current) => current || projectCatalog.projects[0]?.projectId || '');
   }
 
-  async function handleLoadSample(): Promise<void> {
-    await withBusy('sample', async () => {
-      const sample = await loadSamplePart();
+  async function loadImportSessionFromSample(): Promise<void> {
+    await withBusy('import', async () => {
+      const importSession = await importSampleJson();
       dispatch({
-        type: 'sampleLoaded',
-        sample,
-        message: `Loaded structured sample part ${sample.partId}.`,
+        type: 'importSessionLoaded',
+        importSession,
+        message: `Started sample JSON import session ${importSession.id}.`,
       });
+      setActiveLeftTab('model');
+      setActiveBottomTab('metadata');
+      setViewOrientation('fit');
+    });
+  }
+
+  async function handleImportJsonText(): Promise<void> {
+    if (!jsonImportText.trim()) {
+      setError('Paste structured JSON before importing.');
+      return;
+    }
+
+    await withBusy('import', async () => {
+      const importSession = await importJsonText(jsonImportText, jsonFileName || 'structured-part.json');
+      dispatch({
+        type: 'importSessionLoaded',
+        importSession,
+        message: `Imported structured JSON source ${importSession.source.filename}.`,
+      });
+      setActiveBottomTab('metadata');
+    });
+  }
+
+  async function handlePlaceholderImport(format: 'dxf' | 'step'): Promise<void> {
+    await withBusy('import', async () => {
+      const filename = placeholderFileName || `incoming-model.${format}`;
+      const importSession = await importPlaceholder(format, filename);
+      dispatch({
+        type: 'importSessionLoaded',
+        importSession,
+        message: `Registered ${format.toUpperCase()} source ${importSession.source.filename} as an honest placeholder import session.`,
+      });
+      setActiveBottomTab('metadata');
     });
   }
 
   async function handlePlan(): Promise<void> {
-    if (!state.sample) {
+    const partInput = state.currentImportSession?.deterministicPartInput ?? state.sample;
+    if (!partInput) {
       return;
     }
-    const sample = state.sample;
 
     await withBusy('plan', async () => {
-      const plan = await generateDraftPlan(sample);
+      const plan = await generateDraftPlan(partInput);
       dispatch({
         type: 'planLoaded',
         plan,
         message: `Generated deterministic plan with ${plan.operations.length} operations.`,
       });
       setViewOrientation('fit');
+      setViewMode('operation_preview');
       setActiveLeftTab('operations');
       setActiveBottomTab('risks');
     });
@@ -239,7 +285,11 @@ function App() {
     const draftPlan = state.draftPlan;
 
     await withBusy('review', async () => {
-      const review = await reviewDraftPlan(draftPlan);
+      const review = await reviewDraftPlan(draftPlan, {
+        importSession: state.currentImportSession,
+        project: state.currentProject,
+        model: state.currentModel,
+      });
       dispatch({
         type: 'reviewLoaded',
         review,
@@ -266,36 +316,36 @@ function App() {
     });
   }
 
-  async function handleSaveDraft(): Promise<void> {
-    const projectDraft = buildProjectDraft(state);
-    if (!projectDraft) {
+  async function handleSaveProject(): Promise<void> {
+    const project = buildProjectRecord(state);
+    if (!project) {
       return;
     }
 
     await withBusy('save', async () => {
-      const savedDraft = await saveProjectDraft(projectDraft);
+      const savedProject = await saveProjectRecord(project);
       dispatch({
         type: 'projectSaved',
-        project: savedDraft,
-        message: `Saved project session ${savedDraft.projectId} to the API repository.`,
+        project: savedProject,
+        message: `Saved project session ${savedProject.projectId} revision ${savedProject.revision}.`,
       });
       await refreshProjectCatalog();
-      setSelectedProjectId(savedDraft.projectId);
-      setActiveBottomTab('console');
+      setSelectedProjectId(savedProject.projectId);
+      setActiveBottomTab('metadata');
     });
   }
 
-  async function handleLoadDraft(nextProjectId = selectedProjectId || projectId || ''): Promise<void> {
+  async function handleLoadProject(nextProjectId = selectedProjectId || projectId || ''): Promise<void> {
     if (!nextProjectId) {
       return;
     }
 
     await withBusy('load', async () => {
-      const project = await loadProjectDraft(nextProjectId);
+      const project = await loadProjectRecord(nextProjectId);
       dispatch({
         type: 'projectLoaded',
         project,
-        message: `Loaded saved project ${project.projectId} from the API repository.`,
+        message: `Loaded saved project ${project.projectId} revision ${project.revision}.`,
       });
       setSelectedProjectId(project.projectId);
       setActiveBottomTab('metadata');
@@ -303,36 +353,92 @@ function App() {
     });
   }
 
+  function renderImportPanel(): JSX.Element {
+    return (
+      <div className="stacked-list">
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>Start import session</strong>
+            <span>{state.currentImportSession?.importStatus ?? 'idle'}</span>
+          </div>
+          <small>Import source → derive model → derive plan → manually edit → review → save/approve.</small>
+          <div className="app-bar-actions">
+            <button onClick={() => void loadImportSessionFromSample()} disabled={busy !== null}>
+              {busy === 'import' ? 'Importing…' : 'Import sample JSON'}
+            </button>
+          </div>
+        </div>
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>Paste structured JSON</strong>
+            <span>real</span>
+          </div>
+          <input value={jsonFileName} onChange={(event) => setJsonFileName(event.target.value)} placeholder="structured-part.json" />
+          <textarea rows={8} value={jsonImportText} onChange={(event) => setJsonImportText(event.target.value)} placeholder="Paste PartInput JSON here" />
+          <button onClick={() => void handleImportJsonText()} disabled={busy !== null || !jsonImportText.trim()}>
+            {busy === 'import' ? 'Importing…' : 'Import JSON text'}
+          </button>
+        </div>
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>DXF / STEP placeholders</strong>
+            <span>foundational</span>
+          </div>
+          <input value={placeholderFileName} onChange={(event) => setPlaceholderFileName(event.target.value)} placeholder="incoming-model.dxf" />
+          <div className="chip-row">
+            <button className="secondary-button" onClick={() => void handlePlaceholderImport('dxf')} disabled={busy !== null}>Register DXF</button>
+            <button className="secondary-button" onClick={() => void handlePlaceholderImport('step')} disabled={busy !== null}>Register STEP</button>
+          </div>
+          <small>These routes record source metadata and warnings only. They do not parse DXF or STEP geometry yet.</small>
+        </div>
+        {state.currentImportSession ? (
+          <div className="tree-note">
+            <strong>{state.currentImportSession.source.filename}</strong> · {state.currentImportSession.source.type} · {state.currentImportSession.importStatus}
+            <br />
+            {state.currentImportSession.warnings.join(' ')}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderModelTree(): JSX.Element {
-    return state.sample ? (
+    return state.currentModel ? (
       <div className="stacked-list">
         <button
           type="button"
           className={panelSelectionClass(state.selectedEntity?.type === 'project')}
-          onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'project', id: projectId ?? 'project' } })}
+          onClick={() => dispatch({ type: 'selectEntity', entity: projectId ? { type: 'project', id: projectId } : null })}
         >
-          <strong>{state.sample.partName}</strong>
-          <span>Revision {state.sample.revision}</span>
-          <small>{state.sample.stock.material}</small>
+          <strong>{state.sample?.partName ?? state.currentImportSession?.source.filename}</strong>
+          <span>{state.currentImportSession?.source.type ?? 'no source'} · {state.currentModel.status}</span>
+          <small>{state.currentModel.sourceGeometryMetadata[0]}</small>
         </button>
-        {state.draftPlan?.setups.map((setup) => (
-          <div key={setup.id} className="tree-folder">
-            <div className="tree-folder-header">
-              <strong>{setup.name}</strong>
-              <span>{setup.workOffset}</span>
-            </div>
-            <small>{setup.notes.join(' ')}</small>
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>Source / model layers</strong>
+            <span>{state.currentModel.layers.length}</span>
           </div>
-        ))}
-        {state.draftPlan?.assumptions.map((assumption) => (
-          <div key={assumption} className="tree-note">
-            {assumption}
+          <ul className="detail-list">
+            {state.currentModel.layers.map((layer) => (
+              <li key={layer.id}>
+                <strong>{layer.label}</strong>
+                <span>{layer.kind}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>Model bounds</strong>
+            <span>{state.currentModel.entities.length} entities</span>
           </div>
-        ))}
+          <small>
+            {state.currentModel.bounds.size[0].toFixed(1)} × {state.currentModel.bounds.size[1].toFixed(1)} × {state.currentModel.bounds.size[2].toFixed(1)} mm
+          </small>
+        </div>
       </div>
-    ) : (
-      <p className="empty-state">Load a structured part to initialize the project session tree.</p>
-    );
+    ) : renderImportPanel();
   }
 
   function renderFeaturesTree(): JSX.Element {
@@ -404,6 +510,7 @@ function App() {
 
                 const index = filteredOperations.findIndex((candidate) => candidate.id === operation.id);
                 const isSelected = state.selectedEntity?.type === 'operation' && state.selectedEntity.id === operation.id;
+                const warnings = operationWarnings(operation);
 
                 return (
                   <div key={operation.id} className="operation-card">
@@ -419,96 +526,18 @@ function App() {
                         {operation.origin} · {operation.enabled ? 'enabled' : 'disabled'} · {operation.setup}
                       </span>
                       <small>
-                        {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min {operation.isDirty ? '· modified' : ''}
+                        {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min · feature {featureNames.get(operation.featureId) ?? operation.featureId}
                       </small>
                     </button>
-                    <div className="operation-inline-row">
-                      <input
-                        aria-label={`Rename ${operation.name}`}
-                        value={operation.name}
-                        onFocus={() => dispatch({ type: 'selectEntity', entity: { type: 'operation', id: operation.id } })}
-                        onChange={(event) =>
-                          dispatch({
-                            type: 'updateOperation',
-                            operationId: operation.id,
-                            changes: { name: event.target.value || operation.name },
-                            message: `Renamed operation ${operation.name}.`,
-                          })
-                        }
-                      />
-                      {operation.isDirty ? <span className="chip chip-dirty">Modified</span> : null}
+                    <div className="chip-row">
+                      {warnings.map((warning) => <span key={`${operation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
                     </div>
                     <div className="tree-controls-inline">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={() =>
-                          dispatch({
-                            type: 'moveOperation',
-                            operationId: operation.id,
-                            direction: 'up',
-                            message: `Moved ${operation.name} earlier in the draft order.`,
-                          })
-                        }
-                        disabled={index <= 0}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={() =>
-                          dispatch({
-                            type: 'moveOperation',
-                            operationId: operation.id,
-                            direction: 'down',
-                            message: `Moved ${operation.name} later in the draft order.`,
-                          })
-                        }
-                        disabled={index === filteredOperations.length - 1}
-                      >
-                        ↓
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={() =>
-                          dispatch({
-                            type: 'duplicateOperation',
-                            operationId: operation.id,
-                            message: `Duplicated ${operation.name} as a manual operation.`,
-                          })
-                        }
-                      >
-                        ⎘
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={() =>
-                          dispatch({
-                            type: 'toggleOperation',
-                            operationId: operation.id,
-                            message: `${operation.enabled ? 'Disabled' : 'Enabled'} ${operation.name}.`,
-                          })
-                        }
-                      >
-                        {operation.enabled ? 'On' : 'Off'}
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        disabled={operation.origin !== 'manual'}
-                        onClick={() =>
-                          dispatch({
-                            type: 'deleteManualOperation',
-                            operationId: operation.id,
-                            message: `Deleted manual operation ${operation.name}.`,
-                          })
-                        }
-                      >
-                        ✕
-                      </button>
+                      <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'up', message: `Moved ${operation.name} earlier in the draft order.` })} disabled={index <= 0}>↑</button>
+                      <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'down', message: `Moved ${operation.name} later in the draft order.` })} disabled={index === filteredOperations.length - 1}>↓</button>
+                      <button type="button" className="icon-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: operation.id, message: `Duplicated ${operation.name} as a manual operation.` })}>⎘</button>
+                      <button type="button" className="icon-button" onClick={() => dispatch({ type: 'toggleOperation', operationId: operation.id, message: `${operation.enabled ? 'Disabled' : 'Enabled'} ${operation.name}.` })}>{operation.enabled ? 'On' : 'Off'}</button>
+                      <button type="button" className="icon-button" disabled={operation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: operation.id, message: `Deleted manual operation ${operation.name}.` })}>✕</button>
                     </div>
                   </div>
                 );
@@ -566,87 +595,33 @@ function App() {
           </div>
           <label>
             <span>Operation name</span>
-            <input
-              value={selectedOperation.name}
-              onChange={(event) =>
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { name: event.target.value || selectedOperation.name },
-                  message: `Updated operation name for ${selectedOperation.name}.`,
-                })
-              }
-            />
+            <input value={selectedOperation.name} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { name: event.target.value || selectedOperation.name }, message: `Updated operation name for ${selectedOperation.name}.` })} />
+          </label>
+          <label>
+            <span>Linked feature</span>
+            <select value={selectedOperation.featureId} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { featureId: event.target.value }, message: `Relinked ${selectedOperation.name} to a different feature.` })}>
+              {state.draftPlan.features.map((feature) => <option key={feature.id} value={feature.id}>{feature.name}</option>)}
+            </select>
           </label>
           <label>
             <span>Setup</span>
-            <select
-              value={selectedOperation.setupId}
-              onChange={(event) =>
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { setupId: event.target.value },
-                  message: `Updated setup for ${selectedOperation.name}.`,
-                })
-              }
-            >
-              {state.draftPlan.setups.map((setup) => (
-                <option key={setup.id} value={setup.id}>
-                  {setup.name}
-                </option>
-              ))}
+            <select value={selectedOperation.setupId} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { setupId: event.target.value }, message: `Updated setup for ${selectedOperation.name}.` })}>
+              {state.draftPlan.setups.map((setup) => <option key={setup.id} value={setup.id}>{setup.name}</option>)}
             </select>
           </label>
           <label>
             <span>Selected tool</span>
-            <select
-              value={selectedOperation.toolId}
-              onChange={(event) =>
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { toolId: event.target.value },
-                  message: `Selected a different tool for ${selectedOperation.name}.`,
-                })
-              }
-            >
-              {state.draftPlan.toolLibrary.tools.map((tool) => (
-                <option key={tool.id} value={tool.id}>
-                  {tool.name}
-                </option>
-              ))}
+            <select value={selectedOperation.toolId} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { toolId: event.target.value }, message: `Selected a different tool for ${selectedOperation.name}.` })}>
+              {state.draftPlan.toolLibrary.tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
             </select>
           </label>
           <label>
             <span>Strategy</span>
-            <textarea
-              rows={4}
-              value={selectedOperation.strategy}
-              onChange={(event) =>
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { strategy: event.target.value || selectedOperation.strategy },
-                  message: `Updated strategy for ${selectedOperation.name}.`,
-                })
-              }
-            />
+            <textarea rows={4} value={selectedOperation.strategy} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { strategy: event.target.value || selectedOperation.strategy }, message: `Updated strategy for ${selectedOperation.name}.` })} />
           </label>
           <label>
             <span>Operation notes</span>
-            <textarea
-              rows={3}
-              value={selectedOperation.notes}
-              onChange={(event) =>
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { notes: event.target.value },
-                  message: `Updated notes for ${selectedOperation.name}.`,
-                })
-              }
-            />
+            <textarea rows={3} value={selectedOperation.notes} onChange={(event) => dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { notes: event.target.value }, message: `Updated notes for ${selectedOperation.name}.` })} />
           </label>
           <label>
             <span>Estimated minutes</span>
@@ -660,75 +635,26 @@ function App() {
                 if (!Number.isFinite(nextMinutes) || nextMinutes < 0.5) {
                   return;
                 }
-                dispatch({
-                  type: 'updateOperation',
-                  operationId: selectedOperation.id,
-                  changes: { estimatedMinutes: nextMinutes },
-                  message: `Updated estimated time for ${selectedOperation.name}.`,
-                });
+                dispatch({ type: 'updateOperation', operationId: selectedOperation.id, changes: { estimatedMinutes: nextMinutes }, message: `Updated estimated time for ${selectedOperation.name}.` });
               }}
             />
           </label>
           <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={selectedOperation.enabled}
-              onChange={() =>
-                dispatch({
-                  type: 'toggleOperation',
-                  operationId: selectedOperation.id,
-                  message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.`,
-                })
-              }
-            />
+            <input type="checkbox" checked={selectedOperation.enabled} onChange={() => dispatch({ type: 'toggleOperation', operationId: selectedOperation.id, message: `${selectedOperation.enabled ? 'Disabled' : 'Enabled'} ${selectedOperation.name}.` })} />
             <span>Enabled for the draft sequence</span>
           </label>
+          <div className="chip-row">
+            {operationWarnings(selectedOperation).map((warning) => <span key={`${selectedOperation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
+          </div>
           <div className="inspector-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() =>
-                dispatch({
-                  type: 'duplicateOperation',
-                  operationId: selectedOperation.id,
-                  message: `Duplicated ${selectedOperation.name} as a manual operation.`,
-                })
-              }
-            >
-              Duplicate
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={selectedOperation.origin !== 'manual'}
-              onClick={() =>
-                dispatch({
-                  type: 'deleteManualOperation',
-                  operationId: selectedOperation.id,
-                  message: `Deleted manual operation ${selectedOperation.name}.`,
-                })
-              }
-            >
-              Delete manual op
-            </button>
+            <button type="button" className="secondary-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: selectedOperation.id, message: `Duplicated ${selectedOperation.name} as a manual operation.` })}>Duplicate</button>
+            <button type="button" className="secondary-button" disabled={selectedOperation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: selectedOperation.id, message: `Deleted manual operation ${selectedOperation.name}.` })}>Delete manual op</button>
           </div>
           <dl className="detail-pairs">
-            <div>
-              <dt>Order</dt>
-              <dd>{selectedOperation.order + 1}</dd>
-            </div>
-            <div>
-              <dt>Feature</dt>
-              <dd>{selectedFeature?.name ?? selectedOperation.featureId}</dd>
-            </div>
-            <div>
-              <dt>Tool</dt>
-              <dd>{selectedOperation.toolName}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>{selectedOperation.enabled ? 'Enabled' : 'Disabled'}</dd>
-            </div>
+            <div><dt>Order</dt><dd>{selectedOperation.order + 1}</dd></div>
+            <div><dt>Feature</dt><dd>{selectedFeature?.name ?? selectedOperation.featureId}</dd></div>
+            <div><dt>Tool</dt><dd>{selectedOperation.toolName}</dd></div>
+            <div><dt>Status</dt><dd>{selectedOperation.enabled ? 'Enabled' : 'Disabled'}</dd></div>
           </dl>
         </div>
       );
@@ -739,42 +665,13 @@ function App() {
         <div className="inspector-form">
           <span className="chip">{selectedFeature.kind.replace('_', ' ')}</span>
           <dl className="detail-pairs">
-            <div>
-              <dt>Quantity</dt>
-              <dd>{selectedFeature.quantity}</dd>
-            </div>
-            <div>
-              <dt>Depth</dt>
-              <dd>{selectedFeature.depthMm.toFixed(1)} mm</dd>
-            </div>
-            <div>
-              <dt>Envelope</dt>
-              <dd>
-                {selectedFeature.lengthMm.toFixed(1)} × {selectedFeature.widthMm.toFixed(1)} mm
-              </dd>
-            </div>
-            <div>
-              <dt>Related ops</dt>
-              <dd>{orderedOperations.filter((operation) => operation.featureId === selectedFeature.id).length}</dd>
-            </div>
+            <div><dt>Quantity</dt><dd>{selectedFeature.quantity}</dd></div>
+            <div><dt>Depth</dt><dd>{selectedFeature.depthMm.toFixed(1)} mm</dd></div>
+            <div><dt>Envelope</dt><dd>{selectedFeature.lengthMm.toFixed(1)} × {selectedFeature.widthMm.toFixed(1)} mm</dd></div>
+            <div><dt>Related ops</dt><dd>{orderedOperations.filter((operation) => operation.featureId === selectedFeature.id).length}</dd></div>
           </dl>
-          <ul className="detail-list">
-            {selectedFeature.notes.map((note) => (
-              <li key={note}>{note}</li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            onClick={() =>
-              dispatch({
-                type: 'addManualOperation',
-                featureId: selectedFeature.id,
-                message: `Added a manual operation for ${selectedFeature.name}.`,
-              })
-            }
-          >
-            Add manual operation
-          </button>
+          <ul className="detail-list">{selectedFeature.notes.map((note) => <li key={note}>{note}</li>)}</ul>
+          <button type="button" onClick={() => dispatch({ type: 'addManualOperation', featureId: selectedFeature.id, message: `Added a manual operation for ${selectedFeature.name}.` })}>Add manual operation</button>
         </div>
       );
     }
@@ -784,33 +681,17 @@ function App() {
         <div className="inspector-form">
           <span className="chip">tool</span>
           <dl className="detail-pairs">
-            <div>
-              <dt>Name</dt>
-              <dd>{selectedTool.name}</dd>
-            </div>
-            <div>
-              <dt>Type</dt>
-              <dd>{selectedTool.type.replaceAll('_', ' ')}</dd>
-            </div>
-            <div>
-              <dt>Diameter</dt>
-              <dd>{selectedTool.diameterMm} mm</dd>
-            </div>
-            <div>
-              <dt>Max depth</dt>
-              <dd>{selectedTool.maxDepthMm} mm</dd>
-            </div>
+            <div><dt>Name</dt><dd>{selectedTool.name}</dd></div>
+            <div><dt>Type</dt><dd>{selectedTool.type.replaceAll('_', ' ')}</dd></div>
+            <div><dt>Diameter</dt><dd>{selectedTool.diameterMm} mm</dd></div>
+            <div><dt>Max depth</dt><dd>{selectedTool.maxDepthMm} mm</dd></div>
           </dl>
           <p className="empty-state">Tool data remains foundational catalog data. Feeds, speeds, holders, and assemblies are not modeled yet.</p>
         </div>
       );
     }
 
-    return (
-      <p className="empty-state">
-        Select a feature, operation, or tool from the docks. The inspector edits draft data only; deterministic planning remains authoritative.
-      </p>
-    );
+    return <p className="empty-state">Select a feature, operation, or tool from the docks. Deterministic planning remains authoritative.</p>;
   }
 
   function renderBottomPanel(): JSX.Element {
@@ -824,12 +705,7 @@ function App() {
             </header>
             <div className="stacked-list">
               {state.draftPlan.risks.length > 0 ? state.draftPlan.risks.map((risk) => (
-                <button
-                  type="button"
-                  key={risk.id}
-                  className={panelSelectionClass(state.selectedEntity?.type === 'risk' && state.selectedEntity.id === risk.id)}
-                  onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'risk', id: risk.id } })}
-                >
+                <button type="button" key={risk.id} className={panelSelectionClass(state.selectedEntity?.type === 'risk' && state.selectedEntity.id === risk.id)} onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'risk', id: risk.id } })}>
                   <strong>{risk.title}</strong>
                   <span className={`risk-pill risk-${risk.level}`}>{risk.level}</span>
                   <small>{risk.description}</small>
@@ -838,174 +714,87 @@ function App() {
             </div>
           </article>
           <article className="bottom-card">
-            <header>
-              <h3>Manual override status</h3>
-            </header>
+            <header><h3>Unsaved work summary</h3></header>
             <dl className="detail-pairs">
-              <div>
-                <dt>Manual ops</dt>
-                <dd>{state.draftPlan.summary.manualOperationCount}</dd>
-              </div>
-              <div>
-                <dt>Disabled ops</dt>
-                <dd>{state.draftPlan.operations.filter((operation) => !operation.enabled).length}</dd>
-              </div>
-              <div>
-                <dt>Modified ops</dt>
-                <dd>{state.draftPlan.operations.filter((operation) => operation.isDirty).length}</dd>
-              </div>
-              <div>
-                <dt>Cycle time</dt>
-                <dd>{state.draftPlan.estimatedCycleTimeMinutes.toFixed(1)} min</dd>
-              </div>
+              <div><dt>Modified ops</dt><dd>{unsavedSummary.modified}</dd></div>
+              <div><dt>Manual ops</dt><dd>{unsavedSummary.manual}</dd></div>
+              <div><dt>Disabled ops</dt><dd>{unsavedSummary.disabled}</dd></div>
+              <div><dt>Dirty state</dt><dd>{state.dirty ? 'Unsaved changes' : 'Saved / generated state'}</dd></div>
             </dl>
           </article>
         </div>
-      ) : (
-        <p className="empty-state">Plan the part to inspect deterministic risks and manual override status.</p>
-      );
+      ) : <p className="empty-state">Plan the part to inspect deterministic risks and unsaved draft status.</p>;
     }
 
     if (activeBottomTab === 'checklist') {
       return state.draftPlan ? (
         <div className="bottom-grid">
           <article className="bottom-card span-2">
-            <header>
-              <h3>Release checklist</h3>
-            </header>
+            <header><h3>Release checklist</h3></header>
             <ul className="detail-list">
               {state.draftPlan.checklist.map((item) => (
-                <li key={item.id}>
-                  <strong>{item.title}</strong>
-                  <span>{item.rationale}</span>
-                </li>
+                <li key={item.id}><strong>{item.title}</strong><span>{item.rationale}</span></li>
               ))}
             </ul>
           </article>
         </div>
-      ) : (
-        <p className="empty-state">Checklist items appear after deterministic planning.</p>
-      );
+      ) : <p className="empty-state">Checklist items appear after deterministic planning.</p>;
     }
 
     if (activeBottomTab === 'review') {
       return state.review ? (
         <div className="bottom-grid">
           <article className="bottom-card">
-            <header>
-              <h3>Overall assessment</h3>
-              <span className="chip">{state.review.mode}</span>
-            </header>
+            <header><h3>Overall assessment</h3><span className="chip">{state.review.mode}</span></header>
             <p>{state.review.overallAssessment}</p>
-            <p>
-              <strong>Recommendation:</strong> {state.review.approvalRecommendation.replaceAll('_', ' ')}
-            </p>
-            <p>
-              <strong>Fallback:</strong> {state.review.fallbackUsed ? 'heuristic fallback used' : 'structured OpenAI response'}
-            </p>
+            <p><strong>Recommendation:</strong> {state.review.approvalRecommendation.replaceAll('_', ' ')}</p>
+            <p><strong>Fallback:</strong> {state.review.fallbackUsed ? 'heuristic fallback used' : 'structured OpenAI response'}</p>
           </article>
-          <article className="bottom-card">
-            <header>
-              <h3>Missing operations</h3>
-            </header>
-            <ul>
-              {(state.review.missingOperations.length > 0 ? state.review.missingOperations : ['No missing operations flagged.']).map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
-          <article className="bottom-card">
-            <header>
-              <h3>Risk flags</h3>
-            </header>
-            <ul>
-              {(state.review.riskFlags.length > 0 ? state.review.riskFlags : ['No additional risk flags from the advisory review.']).map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
-          <article className="bottom-card">
-            <header>
-              <h3>Suggested edits</h3>
-            </header>
-            <ul>
-              {(state.review.suggestedEdits.length > 0 ? state.review.suggestedEdits : ['No extra edits suggested.']).map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
+          <article className="bottom-card"><header><h3>Missing operations</h3></header><ul>{(state.review.missingOperations.length > 0 ? state.review.missingOperations : ['No missing operations flagged.']).map((item) => <li key={item}>{item}</li>)}</ul></article>
+          <article className="bottom-card"><header><h3>Risk flags</h3></header><ul>{(state.review.riskFlags.length > 0 ? state.review.riskFlags : ['No additional risk flags from the advisory review.']).map((item) => <li key={item}>{item}</li>)}</ul></article>
+          <article className="bottom-card"><header><h3>Suggested edits</h3></header><ul>{(state.review.suggestedEdits.length > 0 ? state.review.suggestedEdits : ['No extra edits suggested.']).map((item) => <li key={item}>{item}</li>)}</ul></article>
         </div>
-      ) : (
-        <p className="empty-state">Run AI review after planning or manual edits. AI remains advisory only.</p>
-      );
+      ) : <p className="empty-state">Run AI review after planning or manual edits. AI remains advisory only.</p>;
     }
 
     if (activeBottomTab === 'metadata') {
-      return state.draftPlan ? (
+      return (
         <div className="bottom-grid">
           <article className="bottom-card">
-            <header>
-              <h3>Project session metadata</h3>
-            </header>
+            <header><h3>Import + project metadata</h3></header>
             <dl className="detail-pairs">
-              <div>
-                <dt>Project id</dt>
-                <dd>{projectId}</dd>
-              </div>
-              <div>
-                <dt>Part id</dt>
-                <dd>{state.draftPlan.part.partId}</dd>
-              </div>
-              <div>
-                <dt>Revision</dt>
-                <dd>{state.draftPlan.part.revision}</dd>
-              </div>
-              <div>
-                <dt>Updated at</dt>
-                <dd>{formatTimestamp(state.lastSavedAt)}</dd>
-              </div>
-              <div>
-                <dt>Approval state</dt>
-                <dd>{state.draftPlan.approval.state.replace('_', ' ')}</dd>
-              </div>
-              <div>
-                <dt>Dirty plan</dt>
-                <dd>{state.dirty ? 'Unsaved draft changes' : 'Saved/generated state'}</dd>
-              </div>
+              <div><dt>Project id</dt><dd>{projectId ?? 'Not planned yet'}</dd></div>
+              <div><dt>Project revision</dt><dd>{state.currentProject?.revision ?? 0}</dd></div>
+              <div><dt>Import id</dt><dd>{state.currentImportSession?.id ?? state.currentProject?.sourceImportId ?? 'None'}</dd></div>
+              <div><dt>Source type</dt><dd>{state.currentImportSession?.source.type ?? state.currentProject?.sourceType ?? 'None'}</dd></div>
+              <div><dt>Filename</dt><dd>{state.currentImportSession?.source.filename ?? state.currentProject?.sourceFilename ?? 'None'}</dd></div>
+              <div><dt>Model status</dt><dd>{state.currentModel?.status ?? 'No model'}</dd></div>
+              <div><dt>Updated at</dt><dd>{formatTimestamp(state.lastSavedAt ?? state.currentProject?.updatedAt)}</dd></div>
+              <div><dt>Approval state</dt><dd>{state.draftPlan?.approval.state.replace('_', ' ') ?? state.currentProject?.approvalState ?? 'draft'}</dd></div>
             </dl>
           </article>
           <article className="bottom-card">
-            <header>
-              <h3>Machine + setup foundation</h3>
-            </header>
+            <header><h3>Warnings + revision summary</h3></header>
             <ul className="detail-list">
-              <li>
-                <strong>{state.draftPlan.machineProfile.name}</strong>
-                <span>
-                  Travels {state.draftPlan.machineProfile.travelsMm.x} × {state.draftPlan.machineProfile.travelsMm.y} × {state.draftPlan.machineProfile.travelsMm.z} mm
-                </span>
-              </li>
-              {state.draftPlan.setups.map((setup) => (
-                <li key={setup.id}>
-                  <strong>{setup.name}</strong>
-                  <span>
-                    {setup.workOffset} · {setup.orientation}
-                  </span>
-                </li>
+              {[...(state.currentImportSession?.warnings ?? []), ...(state.currentProject?.warnings ?? []), ...(state.currentModel?.warnings ?? [])].map((warning, index) => (
+                <li key={`${warning}-${index}`}>{warning}</li>
               ))}
+              {!(state.currentImportSession?.warnings.length || state.currentProject?.warnings.length || state.currentModel?.warnings.length) ? <li>No current source/model warnings.</li> : null}
+            </ul>
+            <ul className="detail-list">
+              {(state.currentProject?.revisions ?? []).slice(-5).reverse().map((revision) => (
+                <li key={revision.id}><strong>Rev {revision.revision}</strong><span>{formatTimestamp(revision.updatedAt)} · ops {revision.operationCount} · manual {revision.manualOperationCount} · warnings {revision.warningCount}</span></li>
+              ))}
+              {!(state.currentProject?.revisions.length) ? <li>No saved revisions yet.</li> : null}
             </ul>
           </article>
         </div>
-      ) : (
-        <p className="empty-state">Project metadata appears once a deterministic plan exists.</p>
       );
     }
 
     return (
       <ul className="console-list">
-        {state.consoleMessages.map((message) => (
-          <li key={message}>{message}</li>
-        ))}
+        {state.consoleMessages.map((message) => <li key={message}>{message}</li>)}
       </ul>
     );
   }
@@ -1014,42 +803,26 @@ function App() {
     <main className="workbench-shell v2-shell">
       <header className="app-bar">
         <div className="app-bar-project">
-          <p className="eyebrow">CAM Workbench v2</p>
-          <h1>{state.sample?.partName ?? 'CAM project session'}</h1>
+          <p className="eyebrow">Geometry & Import Pipeline v3</p>
+          <h1>{state.sample?.partName ?? state.currentImportSession?.source.filename ?? 'CAM project session'}</h1>
           <p>
-            Rev {state.sample?.revision ?? '—'} · Deterministic planning authoritative · AI advisory only · Derived viewport only
+            Rev {state.sample?.revision ?? '—'} · Source {state.currentImportSession?.source.type ?? state.currentProject?.sourceType ?? 'none'} · Model {state.currentModel?.status ?? 'none'} · Deterministic planning authoritative · AI advisory only
           </p>
         </div>
         <div className="app-bar-actions">
-          <button onClick={() => void handlePlan()} disabled={!state.sample || busy !== null}>
-            {busy === 'plan' ? 'Planning…' : 'Plan'}
-          </button>
-          <button onClick={() => void handleReview()} disabled={!state.draftPlan || busy !== null}>
-            {busy === 'review' ? 'Reviewing…' : 'Review'}
-          </button>
-          <button onClick={() => void handleSaveDraft()} disabled={!state.draftPlan || busy !== null}>
-            {busy === 'save' ? 'Saving…' : 'Save'}
-          </button>
-          <button onClick={() => void handleApprove()} disabled={!state.draftPlan || busy !== null}>
-            {busy === 'approve' ? 'Approving…' : 'Approve'}
-          </button>
-          <button className="secondary-button" onClick={() => void handleLoadSample()} disabled={busy !== null}>
-            {busy === 'sample' ? 'Loading…' : 'Reload sample'}
-          </button>
+          <button onClick={() => void handlePlan()} disabled={!state.currentImportSession?.deterministicPartInput || busy !== null}>{busy === 'plan' ? 'Planning…' : 'Derive plan'}</button>
+          <button onClick={() => void handleReview()} disabled={!state.draftPlan || busy !== null}>{busy === 'review' ? 'Reviewing…' : 'Review'}</button>
+          <button onClick={() => void handleSaveProject()} disabled={!state.draftPlan || busy !== null}>{busy === 'save' ? 'Saving…' : 'Save project'}</button>
+          <button onClick={() => void handleApprove()} disabled={!state.draftPlan || busy !== null}>{busy === 'approve' ? 'Approving…' : 'Approve'}</button>
+          <button className="secondary-button" onClick={() => dispatch({ type: 'undo', message: 'Undid the latest local draft edit.' })} disabled={state.history.length === 0 || busy !== null}>Undo</button>
+          <button className="secondary-button" onClick={() => dispatch({ type: 'redo', message: 'Redid the latest local draft edit.' })} disabled={state.future.length === 0 || busy !== null}>Redo</button>
         </div>
         <div className="app-bar-controls">
           <div className="control-stack">
             <span className="panel-label">View presets</span>
             <div className="chip-row">
               {viewOrientations.map((orientation) => (
-                <button
-                  key={orientation}
-                  type="button"
-                  className={viewOrientation === orientation ? 'secondary-button active-button' : 'secondary-button'}
-                  onClick={() => setViewOrientation(orientation)}
-                >
-                  {orientation}
-                </button>
+                <button key={orientation} type="button" className={viewOrientation === orientation ? 'secondary-button active-button' : 'secondary-button'} onClick={() => setViewOrientation(orientation)}>{orientation}</button>
               ))}
             </div>
           </div>
@@ -1057,14 +830,7 @@ function App() {
             <span className="panel-label">View modes</span>
             <div className="chip-row">
               {viewModes.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={viewMode === mode ? 'secondary-button active-button' : 'secondary-button'}
-                  onClick={() => setViewMode(mode)}
-                >
-                  {mode.replace('_', ' ')}
-                </button>
+                <button key={mode} type="button" className={viewMode === mode ? 'secondary-button active-button' : 'secondary-button'} onClick={() => setViewMode(mode)}>{mode.replace('_', ' ')}</button>
               ))}
             </div>
           </div>
@@ -1072,7 +838,8 @@ function App() {
         <div className="app-bar-status">
           <span className={state.dirty ? 'chip chip-dirty' : 'chip'}>{state.dirty ? 'Dirty draft' : 'Draft synced'}</span>
           {state.draftPlan ? <span className="chip">{state.draftPlan.approval.state.replace('_', ' ')}</span> : null}
-          <span className="status-copy">Last save: {formatTimestamp(state.lastSavedAt)}</span>
+          <span className="chip">Warnings {(state.currentImportSession?.warnings.length ?? 0) + (state.currentModel?.warnings.length ?? 0) + (state.currentProject?.warnings.length ?? 0)}</span>
+          <span className="status-copy">Last save: {formatTimestamp(state.lastSavedAt ?? state.currentProject?.updatedAt)}</span>
         </div>
       </header>
 
@@ -1092,24 +859,15 @@ function App() {
               <option value="">Select saved project</option>
               {state.projects.map((project) => (
                 <option key={project.projectId} value={project.projectId}>
-                  {project.projectId} · {project.partName} · {project.revision}
+                  {project.projectId} · rev {project.revision} · {project.sourceType ?? 'no source'}
                 </option>
               ))}
             </select>
-            <button className="secondary-button" onClick={() => void handleLoadDraft()} disabled={!selectedProjectId || busy !== null}>
-              {busy === 'load' ? 'Loading…' : 'Load'}
-            </button>
+            <button className="secondary-button" onClick={() => void handleLoadProject()} disabled={!selectedProjectId || busy !== null}>{busy === 'load' ? 'Loading…' : 'Load'}</button>
           </div>
           <nav className="dock-tabs" aria-label="Workbench left dock tabs">
             {leftDockTabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={activeLeftTab === tab.id ? 'secondary-button active-button' : 'secondary-button'}
-                onClick={() => setActiveLeftTab(tab.id)}
-              >
-                {tab.label}
-              </button>
+              <button key={tab.id} type="button" className={activeLeftTab === tab.id ? 'secondary-button active-button' : 'secondary-button'} onClick={() => setActiveLeftTab(tab.id)}>{tab.label}</button>
             ))}
           </nav>
           <div className="dock-body">{renderLeftDockBody()}</div>
@@ -1118,44 +876,33 @@ function App() {
         <section className="workbench-panel viewport-panel">
           <div className="panel-header">
             <div>
-              <p className="panel-label">3D viewport</p>
-              <h2>Stock, feature, and operation overlays</h2>
+              <p className="panel-label">Viewport</p>
+              <h2>Source/model/features/operation preview</h2>
             </div>
-            {state.draftPlan ? <span className="chip">{viewMode.replace('_', ' ')}</span> : null}
+            {state.currentModel ? <span className="chip">{viewMode.replace('_', ' ')}</span> : null}
           </div>
-          {state.draftPlan ? (
+          {state.currentModel && state.draftPlan ? (
             <>
               <Viewport3D
-                part={state.draftPlan.part}
-                features={state.draftPlan.features}
+                model={state.currentModel}
                 operations={state.draftPlan.operations}
                 selectedFeatureId={selectedFeatureId}
                 selectedOperationId={selectedOperation?.id ?? null}
-                onSelectFeature={(featureId) =>
-                  dispatch({
-                    type: 'selectEntity',
-                    entity: featureId ? { type: 'feature', id: featureId } : null,
-                  })
-                }
+                onSelectFeature={(featureId) => dispatch({ type: 'selectEntity', entity: featureId ? { type: 'feature', id: featureId } : null })}
+                onSelectOperation={(operationId) => dispatch({ type: 'selectEntity', entity: operationId ? { type: 'operation', id: operationId } : null })}
                 viewOrientation={viewOrientation}
                 viewMode={viewMode}
               />
               <div className="viewport-status-bar">
-                <span>
-                  Highest risk: <strong>{state.draftPlan.summary.highestRisk}</strong>
-                </span>
-                <span>
-                  Cycle time: <strong>{state.draftPlan.estimatedCycleTimeMinutes.toFixed(1)} min</strong>
-                </span>
-                <span>
-                  Section-ready: <strong>yes</strong>
-                </span>
+                <span>Highest risk: <strong>{state.draftPlan.summary.highestRisk}</strong></span>
+                <span>Cycle time: <strong>{state.draftPlan.estimatedCycleTimeMinutes.toFixed(1)} min</strong></span>
+                <span>Operation preview: <strong>derived only</strong></span>
               </div>
             </>
+          ) : state.currentModel ? (
+            <div className="viewport-placeholder"><p>Derive a deterministic plan to populate operation previews on top of the imported model.</p></div>
           ) : (
-            <div className="viewport-placeholder">
-              <p>Generate a deterministic draft plan to populate the workpiece scene pipeline.</p>
-            </div>
+            <div className="viewport-placeholder"><p>Start an import session to populate model-aware viewport layers.</p></div>
           )}
         </section>
 
@@ -1163,15 +910,7 @@ function App() {
           <div className="panel-header">
             <div>
               <p className="panel-label">Inspector</p>
-              <h2>
-                {selectedOperation
-                  ? selectedOperation.name
-                  : selectedFeature
-                    ? selectedFeature.name
-                    : selectedTool
-                      ? selectedTool.name
-                      : 'Select a workbench item'}
-              </h2>
+              <h2>{selectedOperation ? selectedOperation.name : selectedFeature ? selectedFeature.name : selectedTool ? selectedTool.name : 'Select a workbench item'}</h2>
             </div>
           </div>
           {renderInspector()}
@@ -1186,14 +925,7 @@ function App() {
           </div>
           <nav className="tab-strip" aria-label="Workbench detail tabs">
             {bottomTabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={activeBottomTab === tab.id ? 'secondary-button active-button' : 'secondary-button'}
-                onClick={() => setActiveBottomTab(tab.id)}
-              >
-                {tab.label}
-              </button>
+              <button key={tab.id} type="button" className={activeBottomTab === tab.id ? 'secondary-button active-button' : 'secondary-button'} onClick={() => setActiveBottomTab(tab.id)}>{tab.label}</button>
             ))}
           </nav>
         </div>

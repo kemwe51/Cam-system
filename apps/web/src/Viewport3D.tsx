@@ -3,16 +3,17 @@ import { Bounds, Line, OrbitControls, Text } from '@react-three/drei';
 import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import type { DraftCamPlan, PartInput } from '@cam/shared';
-import { buildScenePipeline, type DerivedBody, type ScenePipeline, type ViewMode, type ViewOrientation } from './viewportScene';
+import type { ImportedModel, ModelEntity, OperationPreview, ViewMode } from '@cam/model';
+import type { Operation } from '@cam/shared';
+import { buildOperationPreviewLayer, buildScenePipeline, type ViewOrientation } from './viewportScene';
 
 type Viewport3DProps = {
-  part: PartInput;
-  features: DraftCamPlan['features'];
-  operations: DraftCamPlan['operations'];
+  model: ImportedModel;
+  operations: Operation[];
   selectedFeatureId: string | null;
   selectedOperationId: string | null;
   onSelectFeature: (featureId: string) => void;
+  onSelectOperation: (operationId: string) => void;
   viewOrientation: ViewOrientation;
   viewMode: ViewMode;
 };
@@ -35,22 +36,12 @@ function cameraPosition(stockSize: [number, number, number], orientation: ViewOr
   }
 }
 
-function CameraRig({
-  stockSize,
-  viewOrientation,
-  selectedFeaturePosition,
-}: {
-  stockSize: [number, number, number];
-  viewOrientation: ViewOrientation;
-  selectedFeaturePosition: [number, number, number] | null;
-}) {
+function CameraRig({ stockSize, viewOrientation, selectedPosition }: { stockSize: [number, number, number]; viewOrientation: ViewOrientation; selectedPosition: [number, number, number] | null }) {
   const { camera, invalidate } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
   useEffect(() => {
-    const target = selectedFeaturePosition
-      ? new THREE.Vector3(...selectedFeaturePosition)
-      : new THREE.Vector3(0, 0, stockSize[2] * 0.2);
+    const target = selectedPosition ? new THREE.Vector3(...selectedPosition) : new THREE.Vector3(0, 0, stockSize[2] * 0.2);
     const nextPosition = cameraPosition(stockSize, viewOrientation).add(target.clone());
 
     camera.position.copy(nextPosition);
@@ -60,7 +51,7 @@ function CameraRig({
       controlsRef.current.update();
     }
     invalidate();
-  }, [camera, invalidate, selectedFeaturePosition, stockSize, viewOrientation]);
+  }, [camera, invalidate, selectedPosition, stockSize, viewOrientation]);
 
   return <OrbitControls ref={controlsRef} enablePan enableZoom enableRotate makeDefault />;
 }
@@ -78,186 +69,177 @@ function bodyOutlinePoints(size: [number, number, number]): Array<[number, numbe
   ];
 }
 
-function FeatureMesh({
-  entity,
-  selected,
-  onSelect,
-  wireframe,
-}: {
-  entity: DerivedBody;
-  selected: boolean;
-  onSelect: (featureId: string) => void;
-  wireframe: boolean;
-}) {
-  const baseColor = selected ? '#f8fafc' : entity.color;
-  const emissive = selected ? '#38bdf8' : '#000000';
-  const outlinePoints = useMemo(() => bodyOutlinePoints(entity.size), [entity.size]);
-
+function EntityMesh({ entity, fragment, selected, wireframe, onSelect }: { entity: ModelEntity; fragment: ImportedModel['fragments'][number] | undefined; selected: boolean; wireframe: boolean; onSelect: (featureId: string) => void }) {
+  const baseColor = selected ? '#f8fafc' : fragment?.color ?? '#94a3b8';
   const select = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation();
-    onSelect(entity.featureId);
+    if (entity.featureId) {
+      onSelect(entity.featureId);
+    }
   };
 
-  if (entity.kind === 'hole_group') {
-    const diameter = Math.max(entity.size[0] / Math.max(entity.quantity, 1), 2.5);
-    const rows = entity.quantity > 2 ? 2 : 1;
-    const columns = Math.max(Math.ceil(entity.quantity / rows), 1);
+  if (!fragment) {
+    return null;
+  }
+
+  const outlinePoints = bodyOutlinePoints(fragment.size);
+
+  if (fragment.kind === 'hole_marker') {
     return (
-      <group position={entity.position} onClick={select}>
-        {Array.from({ length: entity.quantity }, (_, index) => {
-          const column = index % columns;
-          const row = Math.floor(index / columns);
-          const xOffset = columns === 1 ? 0 : (column - (columns - 1) / 2) * Math.max(diameter * 1.6, 5);
-          const yOffset = rows === 1 ? 0 : ((rows - 1) / 2 - row) * Math.max(diameter * 1.8, 6);
-          return (
-            <mesh key={`${entity.featureId}-${index}`} position={[xOffset, yOffset, -entity.size[2] / 2]} onClick={select}>
-              <cylinderGeometry args={[diameter / 2, diameter / 2, entity.size[2], 28]} />
-              <meshStandardMaterial color={baseColor} transparent opacity={wireframe ? 0.18 : 0.65} emissive={emissive} wireframe={wireframe} />
-            </mesh>
-          );
-        })}
+      <group position={fragment.position} onClick={select}>
+        <mesh>
+          <cylinderGeometry args={[Math.max(fragment.size[0] / 2, 2), Math.max(fragment.size[0] / 2, 2), Math.max(fragment.size[2], 2), 28]} />
+          <meshStandardMaterial color={baseColor} transparent opacity={wireframe ? 0.18 : 0.6} emissive={selected ? '#38bdf8' : '#000000'} wireframe={wireframe} />
+        </mesh>
       </group>
     );
   }
 
-  if (entity.kind === 'contour') {
+  if (fragment.kind === 'contour_path') {
     return (
-      <group position={[entity.position[0], entity.position[1], entity.position[2] + entity.size[2] / 2]} onClick={select}>
+      <group position={[fragment.position[0], fragment.position[1], fragment.position[2] + fragment.size[2] / 2]} onClick={select}>
         <Line points={outlinePoints} color={baseColor} lineWidth={selected ? 3.2 : 2.2} />
       </group>
     );
   }
 
-  if (entity.kind === 'engraving') {
+  if (fragment.kind === 'text_marker') {
     return (
-      <group position={[entity.position[0], entity.position[1], entity.position[2] + 0.6]} onClick={select}>
+      <group position={[fragment.position[0], fragment.position[1], fragment.position[2] + 0.6]} onClick={select}>
         <mesh>
-          <boxGeometry args={[entity.size[0], entity.size[1], entity.size[2]]} />
-          <meshStandardMaterial color={baseColor} transparent opacity={wireframe ? 0.12 : 0.55} emissive={emissive} wireframe={wireframe} />
+          <boxGeometry args={fragment.size} />
+          <meshStandardMaterial color={baseColor} transparent opacity={wireframe ? 0.12 : 0.4} emissive={selected ? '#38bdf8' : '#000000'} wireframe={wireframe} />
         </mesh>
-        <Text
-          position={[0, 0, entity.size[2] / 2 + 0.6]}
-          fontSize={Math.max(entity.size[1] * 0.55, 2.2)}
-          maxWidth={entity.size[0]}
-          color={selected ? '#f8fafc' : '#fdba74'}
-          anchorX="center"
-          anchorY="middle"
-        >
-          {entity.text}
+        <Text position={[0, 0, fragment.size[2] / 2 + 0.6]} fontSize={Math.max(fragment.size[1] * 0.5, 2.2)} maxWidth={fragment.size[0]} color={selected ? '#f8fafc' : '#fdba74'} anchorX="center" anchorY="middle">
+          {fragment.text ?? fragment.label}
         </Text>
       </group>
     );
   }
 
   return (
-    <group position={entity.position} onClick={select}>
+    <group position={fragment.position} onClick={select}>
       <mesh>
-        <boxGeometry args={entity.size} />
-        <meshStandardMaterial
-          color={baseColor}
-          transparent
-          opacity={wireframe ? 0.12 : entity.kind === 'top_surface' ? 0.22 : entity.kind === 'chamfer' ? 0.55 : 0.48}
-          emissive={emissive}
-          wireframe={wireframe || entity.kind === 'top_surface'}
-        />
+        <boxGeometry args={fragment.size} />
+        <meshStandardMaterial color={baseColor} transparent opacity={wireframe ? 0.12 : fragment.kind === 'edge_marker' ? 0.5 : 0.42} emissive={selected ? '#38bdf8' : '#000000'} wireframe={wireframe} />
       </mesh>
       <Line points={outlinePoints} color={selected ? '#e0f2fe' : baseColor} lineWidth={selected ? 2.8 : 1.6} />
     </group>
   );
 }
 
-function OperationOverlayMeshes({ overlays }: { overlays: ScenePipeline['operationOverlays'] }) {
+function OperationPreviewMesh({ preview, entity, fragment, selected, onSelect }: { preview: OperationPreview; entity: ModelEntity | undefined; fragment: ImportedModel['fragments'][number] | undefined; selected: boolean; onSelect: (operationId: string) => void }) {
+  const color = selected ? '#f8fafc' : preview.warnings.length > 0 ? '#f59e0b' : '#38bdf8';
+  const position = fragment?.position ?? entity?.bounds.center ?? [0, 0, 0];
+  const size = fragment?.size ?? entity?.bounds.size ?? [12, 12, 1.5];
+  const select = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation();
+    onSelect(preview.operationId);
+  };
+
+  if (preview.kind === 'contour_path') {
+    return (
+      <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.2]} onClick={select}>
+        <Line points={bodyOutlinePoints([Math.max(size[0] * 0.95, 4), Math.max(size[1] * 0.95, 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
+      </group>
+    );
+  }
+
+  if (preview.kind === 'hole_marker') {
+    return (
+      <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.2]} onClick={select}>
+        <mesh>
+          <cylinderGeometry args={[Math.max(size[0] / 3, 1.5), Math.max(size[0] / 3, 1.5), Math.max(size[2] * 0.6, 2), 24]} />
+          <meshStandardMaterial color={color} transparent opacity={0.18} wireframe />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (preview.kind === 'edge_marker') {
+    return (
+      <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.2]} onClick={select}>
+        <Line points={bodyOutlinePoints([Math.max(size[0], 4), Math.max(size[1], 4), size[2]])} color={color} lineWidth={selected ? 3.4 : 2.4} />
+      </group>
+    );
+  }
+
   return (
-    <group>
-      {overlays.map((overlay) => (
-        <group key={overlay.operationId} position={overlay.position}>
-          <mesh>
-            <boxGeometry args={overlay.size} />
-            <meshStandardMaterial color={overlay.color} transparent opacity={overlay.enabled ? 0.18 : 0.12} wireframe />
-          </mesh>
-          <Text
-            position={[0, 0, overlay.size[2] + 0.5]}
-            fontSize={Math.max(overlay.size[1] * 0.18, 1.7)}
-            maxWidth={overlay.size[0]}
-            color={overlay.color}
-            anchorX="center"
-            anchorY="middle"
-          >
-            {overlay.origin === 'manual' ? `M · ${overlay.label}` : overlay.label}
-          </Text>
-        </group>
-      ))}
+    <group key={preview.id} position={[position[0], position[1], position[2] + size[2] / 2 + 1.4]} onClick={select}>
+      <mesh>
+        <boxGeometry args={[Math.max(size[0] * 0.9, 4), Math.max(size[1] * 0.9, 4), 0.6]} />
+        <meshStandardMaterial color={color} transparent opacity={0.18} wireframe />
+      </mesh>
+      <Text position={[0, 0, 1.1]} fontSize={Math.max(size[1] * 0.18, 1.6)} maxWidth={size[0]} color={color} anchorX="center" anchorY="middle">
+        {preview.label}
+      </Text>
     </group>
   );
 }
 
-function DerivedScene({
-  part,
-  features,
-  operations,
-  selectedFeatureId,
-  selectedOperationId,
-  onSelectFeature,
-  viewOrientation,
-  viewMode,
-}: Viewport3DProps) {
+function DerivedScene({ model, operations, selectedFeatureId, selectedOperationId, onSelectFeature, onSelectOperation, viewOrientation, viewMode }: Viewport3DProps) {
+  const operationPreviews = useMemo(() => buildOperationPreviewLayer(model, operations), [model, operations]);
   const scene = useMemo(
-    () => buildScenePipeline(part, features, operations, selectedFeatureId, selectedOperationId),
-    [features, operations, part, selectedFeatureId, selectedOperationId],
+    () => buildScenePipeline(model, operationPreviews, selectedFeatureId, selectedOperationId),
+    [model, operationPreviews, selectedFeatureId, selectedOperationId],
   );
-  const selectedEntity = scene.featureBodies.find((entity) => entity.featureId === selectedFeatureId) ?? null;
+  const selectedEntity = scene.selectionLayer.entity;
   const stockEdges = useMemo(
-    () => new THREE.EdgesGeometry(new THREE.BoxGeometry(...scene.stockBody.size)),
-    [scene.stockBody.size],
+    () => new THREE.EdgesGeometry(new THREE.BoxGeometry(...scene.stockSize)),
+    [scene.stockSize],
   );
+  const fragmentById = scene.fragments;
+  const entityById = useMemo(() => new Map(model.entities.map((entity) => [entity.id, entity])), [model.entities]);
   const wireframe = viewMode === 'wireframe';
-  const showFeatures = viewMode !== 'stock_only' && viewMode !== 'operations';
-  const showOperations = viewMode === 'operations' || Boolean(selectedOperationId);
+  const showFeatures = viewMode === 'shaded' || viewMode === 'wireframe' || viewMode === 'features';
+  const showOperationPreview = viewMode === 'operation_preview' || Boolean(selectedOperationId);
+  const stockOpacity = viewMode === 'stock' ? 0.42 : 0.22;
 
   return (
     <>
-      <CameraRig
-        stockSize={scene.stockBody.size}
-        viewOrientation={viewOrientation}
-        selectedFeaturePosition={selectedEntity?.position ?? null}
-      />
+      <CameraRig stockSize={scene.stockSize} viewOrientation={viewOrientation} selectedPosition={selectedEntity?.bounds.center ?? null} />
       <ambientLight intensity={0.8} />
-      <directionalLight position={[scene.stockBody.size[0], scene.stockBody.size[1], scene.stockBody.size[2] * 2]} intensity={1.2} />
-      <gridHelper args={[Math.max(scene.stockBody.size[0], scene.stockBody.size[1]) * 1.5, 12, '#1d4ed8', '#1e293b']} />
-      <axesHelper args={[Math.max(...scene.stockBody.size) * 0.45]} />
+      <directionalLight position={[scene.stockSize[0], scene.stockSize[1], scene.stockSize[2] * 2]} intensity={1.2} />
+      <gridHelper args={[Math.max(scene.stockSize[0], scene.stockSize[1]) * 1.5, 12, '#1d4ed8', '#1e293b']} />
+      <axesHelper args={[Math.max(...scene.stockSize) * 0.45]} />
       <Bounds fit clip observe margin={1.25}>
         <group>
           <mesh position={[0, 0, 0]} onClick={() => onSelectFeature('')}>
-            <boxGeometry args={scene.stockBody.size} />
-            <meshStandardMaterial
-              color="#0f172a"
-              transparent
-              opacity={viewMode === 'stock_only' ? 0.42 : 0.22}
-              roughness={0.55}
-              metalness={0.1}
-              wireframe={wireframe}
-            />
+            <boxGeometry args={scene.stockSize} />
+            <meshStandardMaterial color="#0f172a" transparent opacity={stockOpacity} roughness={0.55} metalness={0.1} wireframe={wireframe || viewMode === 'stock'} />
           </mesh>
           <lineSegments geometry={stockEdges}>
             <lineBasicMaterial color="#94a3b8" />
           </lineSegments>
           {showFeatures
-            ? scene.featureBodies.map((entity) => (
-                <FeatureMesh
-                  key={entity.featureId}
+            ? scene.featureLayer.entities.map((entity) => (
+                <EntityMesh
+                  key={entity.id}
                   entity={entity}
+                  fragment={fragmentById.get(entity.fragmentIds[0] ?? '')}
                   selected={selectedFeatureId === entity.featureId}
-                  onSelect={onSelectFeature}
                   wireframe={wireframe || viewMode === 'features'}
+                  onSelect={onSelectFeature}
                 />
               ))
             : null}
-          {showOperations ? <OperationOverlayMeshes overlays={scene.operationOverlays} /> : null}
-          {scene.selectionOverlay ? (
-            <group position={scene.selectionOverlay.position}>
+          {showOperationPreview
+            ? scene.operationPreviewLayer.previews.map((preview) => (
+                <OperationPreviewMesh
+                  key={preview.id}
+                  preview={preview}
+                  entity={preview.entityId ? entityById.get(preview.entityId) : undefined}
+                  fragment={fragmentById.get(preview.fragmentIds[0] ?? '')}
+                  selected={selectedOperationId === preview.operationId}
+                  onSelect={onSelectOperation}
+                />
+              ))
+            : null}
+          {scene.selectionLayer.entity ? (
+            <group position={scene.selectionLayer.entity.bounds.center}>
               <mesh>
-                <boxGeometry args={scene.selectionOverlay.size} />
-                <meshStandardMaterial color={scene.selectionOverlay.color} transparent opacity={0.08} wireframe />
+                <boxGeometry args={[scene.selectionLayer.entity.bounds.size[0] + 2.5, scene.selectionLayer.entity.bounds.size[1] + 2.5, scene.selectionLayer.entity.bounds.size[2] + 1.5]} />
+                <meshStandardMaterial color="#f8fafc" transparent opacity={0.08} wireframe />
               </mesh>
             </group>
           ) : null}
@@ -268,10 +250,7 @@ function DerivedScene({
 }
 
 export function Viewport3D(props: Viewport3DProps) {
-  const disclaimer = useMemo(
-    () => buildScenePipeline(props.part, props.features, props.operations, props.selectedFeatureId, props.selectedOperationId).disclaimer,
-    [props.features, props.operations, props.part, props.selectedFeatureId, props.selectedOperationId],
-  );
+  const disclaimer = useMemo(() => buildScenePipeline(props.model, buildOperationPreviewLayer(props.model, props.operations), props.selectedFeatureId, props.selectedOperationId).disclaimer, [props.model, props.operations, props.selectedFeatureId, props.selectedOperationId]);
 
   return (
     <div className="viewport-stage">
@@ -280,7 +259,7 @@ export function Viewport3D(props: Viewport3DProps) {
         <DerivedScene {...props} />
       </Canvas>
       <div className="viewport-overlay">
-        <strong>Derived 3D workpiece view</strong>
+        <strong>Derived model + operation preview view</strong>
         <span>{disclaimer}</span>
       </div>
     </div>
