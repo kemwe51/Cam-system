@@ -56,6 +56,14 @@ const defaultSetupId = defaultSetups[0]?.id ?? 'setup-1';
 const inferredDepthMm = 1;
 const inferredStockZMm = 6;
 const geometryDiameterGroupingToleranceMm = 0.15;
+const deepContourThresholdMm = 8;
+const polarPatternRadialToleranceMm = 0.25;
+const multiHoleGroupConfidence = 0.97;
+const singleHoleGroupConfidence = 0.88;
+const minimumRegionAreaDivisor = 1;
+const slotElongationRatio = 4;
+const slotWidthToleranceFactor = 1.5;
+const pocketAreaRatioThreshold = 0.02;
 
 type ToolSelection = {
   tool: Tool;
@@ -350,7 +358,7 @@ function selectTool(feature: NormalizedFeature): ToolSelection {
         },
       };
     case 'contour': {
-      const tool = feature.depthMm > 8 || classification === 'inside_contour' ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
+      const tool = feature.depthMm > deepContourThresholdMm || classification === 'inside_contour' ? requireTool('tool-flat-6') : requireTool('tool-flat-10');
       return {
         tool,
         toolClass: 'contour_end_mill',
@@ -608,11 +616,21 @@ function inferHolePattern(centers: Array<{ x: number; y: number }>): PartInput['
     y: centers.reduce((sum, center) => sum + center.y, 0) / centers.length,
   };
   const radii = centers.map((center) => roundNumber(Math.hypot(center.x - centroid.x, center.y - centroid.y), 2));
-  if (Math.max(...radii) - Math.min(...radii) <= 0.25) {
+  if (Math.max(...radii) - Math.min(...radii) <= polarPatternRadialToleranceMm) {
     return 'polar';
   }
 
   return 'custom';
+}
+
+function determinePreservedOperationSource(operation: Operation): Operation['source'] {
+  if (operation.origin === 'manual') {
+    return 'manual';
+  }
+  if (operation.source === 'generated') {
+    return 'edited';
+  }
+  return operation.source;
 }
 
 export function extractGeometryFeatures(documentInput: Geometry2DDocument, graphInput?: GeometryGraph): GeometryFeatureExtractionResult {
@@ -685,7 +703,7 @@ export function extractGeometryFeatures(documentInput: Geometry2DDocument, graph
       loops[0]!.bounds,
     );
 
-    const confidence = loops.length > 1 ? 0.97 : 0.88;
+    const confidence = loops.length > 1 ? multiHoleGroupConfidence : singleHoleGroupConfidence;
     const inferenceWarnings = [
       'Hole depth is not present in DXF. Hole depth defaults must be reviewed manually before release.',
       ...(loops.length === 1
@@ -746,20 +764,20 @@ export function extractGeometryFeatures(documentInput: Geometry2DDocument, graph
 
       const ratio = Math.max(innerLoop.bounds.size.x, innerLoop.bounds.size.y, 0.1)
         / Math.max(Math.min(innerLoop.bounds.size.x, innerLoop.bounds.size.y), 0.1);
-      const areaRatio = Math.abs(innerLoop.area) / Math.max(Math.abs(regionOuter.area), 1);
+      const areaRatio = Math.abs(innerLoop.area) / Math.max(Math.abs(regionOuter.area), minimumRegionAreaDivisor);
       let kind: GeometryFeatureInferenceKind = 'inside_contour';
       let mappedFeatureKind: GeometryFeatureInference['mappedFeatureKind'] = 'contour';
       let confidence = 0.68;
       let inferenceMethod = 'Internal closed loop preserved conservatively as an inside contour candidate.';
       const inferenceWarnings: string[] = [];
 
-      if (ratio >= 4 && Math.min(innerLoop.bounds.size.x, innerLoop.bounds.size.y) <= narrowSlotWidthThresholdMm * 1.5) {
+      if (ratio >= slotElongationRatio && Math.min(innerLoop.bounds.size.x, innerLoop.bounds.size.y) <= narrowSlotWidthThresholdMm * slotWidthToleranceFactor) {
         kind = 'slot';
         mappedFeatureKind = 'slot';
         confidence = 0.79;
         inferenceMethod = 'Elongated internal closed loop promoted as a slot candidate.';
         inferenceWarnings.push('Slot classification is heuristic. Confirm actual slot intent, width, and wall style before release.');
-      } else if (areaRatio >= 0.02 && ratio < 4) {
+      } else if (areaRatio >= pocketAreaRatioThreshold && ratio < slotElongationRatio) {
         kind = 'pocket';
         mappedFeatureKind = 'pocket';
         confidence = 0.84;
@@ -1345,7 +1363,7 @@ export function regenerateDraftPlan(planInput: DraftCamPlan, options: Regenerati
     return Boolean(options.preserveFrozenEdited && operation.frozen);
   }).map((operation) => ({
     ...operation,
-    source: operation.origin === 'manual' ? 'manual' : operation.source === 'generated' ? 'edited' : operation.source,
+    source: determinePreservedOperationSource(operation),
   }));
 
   const regeneratedOperations = basePlan.operations.filter((operation) => (
