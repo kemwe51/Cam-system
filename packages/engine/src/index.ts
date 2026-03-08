@@ -5,22 +5,30 @@ import {
   defaultMachineProfile,
   defaultSetups,
   defaultToolLibrary,
+  depthAssumptionSchema,
+  depthWarningSchema,
   draftCamPlanSchema,
+  featureDepthModelSchema,
   featureClassificationSchema,
   getSetupLabel,
   machiningAssumptionSchema,
   machiningIntentSchema,
   operationCandidateSchema,
+  operationDepthProfileSchema,
   partInputSchema,
   planningWarningSchema,
   samplePartInput,
   type ApprovalRequest,
+  type DepthAssumption,
+  type DepthWarning,
   type DraftCamPlan,
+  type FeatureDepthModel,
   type FeatureClassification,
   type MachiningAssumption,
   type MachiningIntent,
   type NormalizedFeature,
   type Operation,
+  type OperationDepthProfile,
   type OperationCandidate,
   type OperationKind,
   type OperationLink,
@@ -212,6 +220,143 @@ function buildMachiningIntent(feature: Pick<
   });
 }
 
+const defaultSetupPlane = {
+  id: 'setup-plane-top',
+  label: 'Top setup plane',
+  orientation: 'top' as const,
+};
+
+function buildFeatureDepthSignals(feature: Pick<NormalizedFeature, 'id' | 'name' | 'origin' | 'depthMm' | 'warnings'>): {
+  assumptions: DepthAssumption[];
+  warnings: DepthWarning[];
+} {
+  if (feature.origin !== 'geometry_inferred' || feature.depthMm <= 0) {
+    return {
+      assumptions: [],
+      warnings: [],
+    };
+  }
+
+  return {
+    assumptions: [
+      depthAssumptionSchema.parse({
+        id: `${feature.id}-depth-assumed`,
+        label: 'Depth assumed from 2D source',
+        description: `${feature.name} uses a provisional ${roundNumber(feature.depthMm)} mm depth because imported 2D geometry does not include verified Z extents.`,
+        source: 'import_default',
+        reviewRequired: true,
+      }),
+    ],
+    warnings: [
+      depthWarningSchema.parse({
+        code: 'depth_assumed_from_2d',
+        message: 'Depth is inferred from a 2D planning default and must be confirmed before release.',
+        severity: feature.warnings.length > 0 ? 'high' : 'medium',
+        reviewRequired: true,
+      }),
+    ],
+  };
+}
+
+function buildFeatureDepthModel(feature: Pick<NormalizedFeature, 'id' | 'name' | 'depthMm' | 'origin' | 'warnings'>): FeatureDepthModel {
+  const stockTopReference = {
+    id: `${feature.id}-stock-top`,
+    kind: 'stock_top' as const,
+    label: 'Stock top',
+    zMm: 0,
+  };
+  const floorReference = {
+    id: `${feature.id}-feature-floor`,
+    kind: feature.depthMm > 0 ? 'feature_floor' as const : 'feature_top' as const,
+    label: feature.depthMm > 0 ? `${feature.name} floor` : `${feature.name} top`,
+    zMm: -feature.depthMm,
+  };
+  const signals = buildFeatureDepthSignals(feature);
+  const machiningLevels = [
+    {
+      id: `${feature.id}-level-stock-top`,
+      label: 'Stock top',
+      reference: stockTopReference,
+      zMm: 0,
+    },
+    ...(feature.depthMm > 0
+      ? [{
+          id: `${feature.id}-level-floor`,
+          label: 'Target floor',
+          reference: floorReference,
+          zMm: floorReference.zMm,
+        }]
+      : []),
+  ];
+
+  return featureDepthModelSchema.parse({
+    setupPlane: defaultSetupPlane,
+    stockTop: {
+      reference: stockTopReference,
+      zMm: stockTopReference.zMm,
+    },
+    ...(feature.depthMm > 0
+      ? {
+          floorLevel: {
+            reference: floorReference,
+            zMm: floorReference.zMm,
+          },
+          depthRange: {
+            topZMm: 0,
+            bottomZMm: floorReference.zMm,
+          },
+        }
+      : {}),
+    machiningLevels,
+    assumptions: signals.assumptions,
+    warnings: signals.warnings,
+  });
+}
+
+function buildOperationDepthProfile(feature: NormalizedFeature, tool: Tool): OperationDepthProfile {
+  const depthModel = feature.depthModel ?? buildFeatureDepthModel(feature);
+  const passDepthHintMm = feature.depthMm > 0
+    ? roundNumber(Math.min(feature.depthMm, Math.max(Math.min(tool.maxDepthMm / 2, tool.maxDepthMm), 0.25)))
+    : undefined;
+  const warnings = [...depthModel.warnings];
+
+  if (feature.depthMm > tool.maxDepthMm) {
+    warnings.push(depthWarningSchema.parse({
+      code: 'tool_depth_review_required',
+      message: `${tool.name} max depth (${roundNumber(tool.maxDepthMm)} mm) is shallower than the requested ${roundNumber(feature.depthMm)} mm feature depth.`,
+      severity: 'high',
+      reviewRequired: true,
+    }));
+  }
+
+  return operationDepthProfileSchema.parse({
+    setupPlane: depthModel.setupPlane,
+    stockTop: depthModel.stockTop,
+    floorLevel: depthModel.floorLevel,
+    depthRange: depthModel.depthRange,
+    ...(feature.depthMm > 0 ? { targetDepthMm: feature.depthMm } : {}),
+    ...(passDepthHintMm
+      ? {
+          passDepthHint: {
+            axialStepDownMm: passDepthHintMm,
+            basis: feature.depthMm > tool.maxDepthMm ? 'tool_capacity' : 'feature_depth',
+          },
+        }
+      : {}),
+    safeClearance: {
+      reference: {
+        id: `${feature.id}-safe-clearance`,
+        kind: 'safe_clearance',
+        label: 'Safe clearance',
+        zMm: 5,
+      },
+      zMm: 5,
+    },
+    assumptions: depthModel.assumptions,
+    warnings,
+  });
+}
+
 function normalizePart(part: PartInput): NormalizedFeature[] {
   const features: NormalizedFeature[] = [];
 
@@ -228,6 +373,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: surface.areaMm2,
       notes: [`Finish target: ${surface.finish}`],
       ...copyFeatureMetadata(surface),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('top-surface', index, surface.id),
+        name: surface.name,
+        depthMm: 0,
+        origin: surface.origin,
+        warnings: surface.warnings,
+      }),
     });
   });
 
@@ -244,6 +396,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: contour.lengthMm * contour.depthMm,
       notes: ['Structured contour input normalized as a profile boundary.'],
       ...copyFeatureMetadata(contour),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('contour', index, contour.id),
+        name: contour.name,
+        depthMm: contour.depthMm,
+        origin: contour.origin,
+        warnings: contour.warnings,
+      }),
     });
   });
 
@@ -260,6 +419,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: pocket.lengthMm * pocket.widthMm,
       notes: ['Pocket kept rectangular in v2; no freeform geometry is assumed.'],
       ...copyFeatureMetadata(pocket),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('pocket', index, pocket.id),
+        name: pocket.name,
+        depthMm: pocket.depthMm,
+        origin: pocket.origin,
+        warnings: pocket.warnings,
+      }),
     });
   });
 
@@ -276,6 +442,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: slot.lengthMm * slot.widthMm,
       notes: ['Slot width drives tool selection and machinability risk.'],
       ...copyFeatureMetadata(slot),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('slot', index, slot.id),
+        name: slot.name,
+        depthMm: slot.depthMm,
+        origin: slot.origin,
+        warnings: slot.warnings,
+      }),
     });
   });
 
@@ -292,6 +465,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: Math.PI * (holeGroup.diameterMm / 2) ** 2 * holeGroup.count,
       notes: [`Pattern: ${holeGroup.pattern}`],
       ...copyFeatureMetadata(holeGroup),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('hole-group', index, holeGroup.id),
+        name: holeGroup.name,
+        depthMm: holeGroup.depthMm,
+        origin: holeGroup.origin,
+        warnings: holeGroup.warnings,
+      }),
     });
   });
 
@@ -308,6 +488,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: chamfer.lengthMm * chamfer.sizeMm,
       notes: ['Chamfer modeled as an edge break request only.'],
       ...copyFeatureMetadata(chamfer),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('chamfer', index, chamfer.id),
+        name: chamfer.name,
+        depthMm: chamfer.sizeMm,
+        origin: chamfer.origin,
+        warnings: chamfer.warnings,
+      }),
     });
   });
 
@@ -324,6 +511,13 @@ function normalizePart(part: PartInput): NormalizedFeature[] {
       areaMm2: engraving.lengthMm * 0.2,
       notes: [`Text: ${engraving.text}`],
       ...copyFeatureMetadata(engraving),
+      depthModel: buildFeatureDepthModel({
+        id: createFeatureId('engraving', index, engraving.id),
+        name: engraving.name,
+        depthMm: engraving.depthMm,
+        origin: engraving.origin,
+        warnings: engraving.warnings,
+      }),
     });
   });
 
@@ -1005,6 +1199,7 @@ function createOperation(
     toolClass: candidate.toolClass,
     toolSelectionReason: selection.reason,
     machiningIntent: candidate.machiningIntent,
+    depthProfile: buildOperationDepthProfile(feature, selection.tool),
     links,
     warnings: candidate.warnings,
     assumptions: candidate.assumptions,

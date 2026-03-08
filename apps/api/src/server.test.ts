@@ -154,6 +154,8 @@ describe('CAM API server', () => {
     const loadedProject = await loadResponse.json();
     expect(loadedProject.sourceFilename).toBe('sample.json');
     expect(loadedProject.plan.operations).toHaveLength(plan.operations.length);
+    expect(loadedProject.plan.features[0].depthModel.setupPlane.label).toBe('Top setup plane');
+    expect(loadedProject.plan.operations[1].depthProfile.targetDepthMm).toBeGreaterThan(0);
 
     const legacyLoadResponse = await fetch(`${instance.baseUrl}/drafts/${projectId}`);
     expect(legacyLoadResponse.ok).toBe(true);

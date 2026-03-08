@@ -155,6 +155,10 @@ function operationWarnings(operation: { origin: 'automatic' | 'manual'; source: 
   ];
 }
 
+function hasDepthAssumption(item: { assumptions?: Array<unknown>; warnings?: Array<unknown> } | null | undefined): boolean {
+  return (item?.assumptions?.length ?? 0) > 0 || (item?.warnings?.length ?? 0) > 0;
+}
+
 function App() {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const [error, setError] = useState<string | null>(null);
@@ -651,12 +655,13 @@ function App() {
                   <small>
                     Qty {feature.quantity} · {feature.lengthMm.toFixed(1)} × {feature.widthMm.toFixed(1)} × {feature.depthMm.toFixed(1)} mm
                   </small>
-                  <div className="chip-row">
-                    {feature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
-                    {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
-                    {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
-                    {extracted ? <span className="chip">{(extracted.confidence * 100).toFixed(0)}% extraction</span> : null}
-                  </div>
+                   <div className="chip-row">
+                     {feature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
+                     {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
+                     {hasDepthAssumption(feature.depthModel) ? <span className="chip chip-dirty">depth assumed</span> : null}
+                     {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
+                     {extracted ? <span className="chip">{(extracted.confidence * 100).toFixed(0)}% extraction</span> : null}
+                   </div>
                 </button>
               );
             })}
@@ -733,9 +738,10 @@ function App() {
                         {operation.toolName} · {operation.estimatedMinutes.toFixed(1)} min · {operation.toolClass?.replaceAll('_', ' ') ?? 'tooling TBD'} · feature {featureNames.get(operation.featureId) ?? operation.featureId}
                       </small>
                     </button>
-                    <div className="chip-row">
-                      {warnings.map((warning) => <span key={`${operation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
-                    </div>
+                     <div className="chip-row">
+                       {warnings.map((warning) => <span key={`${operation.id}-${warning}`} className="chip chip-dirty">{warning}</span>)}
+                       {hasDepthAssumption(operation.depthProfile) ? <span className="chip chip-dirty">depth assumed</span> : null}
+                     </div>
                     <div className="tree-controls-inline">
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'up', message: `Moved ${operation.name} earlier in the draft order.` })} disabled={index <= 0}>↑</button>
                       <button type="button" className="icon-button" onClick={() => dispatch({ type: 'moveOperation', operationId: operation.id, direction: 'down', message: `Moved ${operation.name} later in the draft order.` })} disabled={index === filteredOperations.length - 1}>↓</button>
@@ -801,6 +807,7 @@ function App() {
             <span className="chip">{selectedOperation.source}</span>
             {selectedOperation.isDirty ? <span className="chip chip-dirty">Unsaved op change</span> : null}
             {selectedOperation.frozen ? <span className="chip">Frozen for regeneration</span> : null}
+            {hasDepthAssumption(selectedOperation.depthProfile) ? <span className="chip chip-dirty">depth assumed</span> : null}
           </div>
           <label>
             <span>Operation name</span>
@@ -869,6 +876,16 @@ function App() {
               {selectedOperation.assumptions.map((assumption) => <li key={assumption.id}>{assumption.label}: {assumption.description}</li>)}
             </ul>
           ) : null}
+          {selectedOperation.depthProfile?.assumptions.length ? (
+            <ul className="detail-list">
+              {selectedOperation.depthProfile.assumptions.map((assumption) => <li key={assumption.id}>{assumption.label}: {assumption.description}</li>)}
+            </ul>
+          ) : null}
+          {selectedOperation.depthProfile?.warnings.length ? (
+            <ul className="detail-list">
+              {selectedOperation.depthProfile.warnings.map((warning) => <li key={warning.code}>{warning.severity.toUpperCase()}: {warning.message}</li>)}
+            </ul>
+          ) : null}
           <div className="inspector-actions">
             <button type="button" className="secondary-button" onClick={() => dispatch({ type: 'duplicateOperation', operationId: selectedOperation.id, message: `Duplicated ${selectedOperation.name} as a manual operation.` })}>Duplicate</button>
             <button type="button" className="secondary-button" disabled={selectedOperation.origin !== 'manual'} onClick={() => dispatch({ type: 'deleteManualOperation', operationId: selectedOperation.id, message: `Deleted manual operation ${selectedOperation.name}.` })}>Delete manual op</button>
@@ -881,6 +898,10 @@ function App() {
             <div><dt>Tool class</dt><dd>{selectedOperation.toolClass?.replaceAll('_', ' ') ?? 'Not set'}</dd></div>
             <div><dt>Preview summary</dt><dd>{linkedPreview ? `${linkedPreview.sourceGeometryIds.length} source refs linked` : 'Generic preview only'}</dd></div>
             <div><dt>Inference</dt><dd>{selectedOperation.machiningIntent?.rationale ?? 'Manual operation'}</dd></div>
+            {selectedOperation.depthProfile?.targetDepthMm !== undefined ? <div><dt>Target depth</dt><dd>{selectedOperation.depthProfile.targetDepthMm.toFixed(1)} mm</dd></div> : null}
+            {selectedOperation.depthProfile?.floorLevel ? <div><dt>Floor level</dt><dd>{selectedOperation.depthProfile.floorLevel.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedOperation.depthProfile?.passDepthHint ? <div><dt>Pass depth hint</dt><dd>{selectedOperation.depthProfile.passDepthHint.axialStepDownMm.toFixed(1)} mm ({selectedOperation.depthProfile.passDepthHint.basis.replace('_', ' ')})</dd></div> : null}
+            {selectedOperation.depthProfile?.safeClearance ? <div><dt>Safe clearance</dt><dd>{selectedOperation.depthProfile.safeClearance.zMm.toFixed(1)} mm</dd></div> : null}
           </dl>
         </div>
       );
@@ -893,6 +914,7 @@ function App() {
             <span className="chip">{selectedFeature.kind.replace('_', ' ')}</span>
             {selectedFeature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
             {selectedFeature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{selectedFeature.classificationState.replace('_', ' ')}</span> : null}
+            {hasDepthAssumption(selectedFeature.depthModel) ? <span className="chip chip-dirty">depth assumed</span> : null}
             {selectedFeature.warnings.length > 0 ? <span className="chip chip-dirty">{selectedFeature.warnings.length} warnings</span> : null}
           </div>
           <dl className="detail-pairs">
@@ -903,6 +925,8 @@ function App() {
             <div><dt>Confidence</dt><dd>{(selectedFeature.confidence * 100).toFixed(0)}%</dd></div>
             <div><dt>Inference</dt><dd>{selectedFeature.inferenceMethod ?? 'Structured input'}</dd></div>
             <div><dt>Machining intent</dt><dd>{selectedFeature.machiningIntent?.classification.replace('_', ' ') ?? 'Not classified'}</dd></div>
+            {selectedFeature.depthModel?.floorLevel ? <div><dt>Floor level</dt><dd>{selectedFeature.depthModel.floorLevel.zMm.toFixed(1)} mm</dd></div> : null}
+            {selectedFeature.depthModel?.stockTop ? <div><dt>Stock top</dt><dd>{selectedFeature.depthModel.stockTop.zMm.toFixed(1)} mm</dd></div> : null}
             {selectedExtractedFeature ? <div><dt>Extracted kind</dt><dd>{selectedExtractedFeature.kind.replace('_', ' ')}</dd></div> : null}
           </dl>
           <ul className="detail-list">{selectedFeature.notes.map((note) => <li key={note}>{note}</li>)}</ul>
@@ -914,6 +938,16 @@ function App() {
           {selectedFeature.warnings.length > 0 ? (
             <ul className="detail-list">
               {selectedFeature.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+            </ul>
+          ) : null}
+          {selectedFeature.depthModel?.assumptions.length ? (
+            <ul className="detail-list">
+              {selectedFeature.depthModel.assumptions.map((assumption) => <li key={assumption.id}>{assumption.label}: {assumption.description}</li>)}
+            </ul>
+          ) : null}
+          {selectedFeature.depthModel?.warnings.length ? (
+            <ul className="detail-list">
+              {selectedFeature.depthModel.warnings.map((warning) => <li key={warning.code}>{warning.severity.toUpperCase()}: {warning.message}</li>)}
             </ul>
           ) : null}
           {selectedFeature.origin === 'geometry_inferred' ? (

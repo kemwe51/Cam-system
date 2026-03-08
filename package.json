@@ -17,11 +17,11 @@
     "build": "npm run build:packages && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
     "verify": "npm run build && npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
-    "test": "npm run build:packages && npm run test:workspaces",
+    "test": "npm run test:workspaces",
     "test:all": "npm run test:workspaces",
     "dev": "npm run dev:web",
-    "dev:api": "npm run build:packages && npm run dev --workspace @cam/api --",
-    "dev:web": "npm run build:packages && npm run dev --workspace @cam/web --"
+    "dev:api": "npm run dev --workspace @cam/api --",
+    "dev:web": "npm run dev --workspace @cam/web --"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

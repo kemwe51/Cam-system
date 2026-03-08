@@ -12,6 +12,7 @@ import {
 import {
   camReviewSchema,
   draftCamPlanSchema,
+  operationDepthProfileSchema,
   previewPathSchema,
   selectedEntitySchema,
   type DraftCamPlan,
@@ -135,6 +136,8 @@ export const operationPreviewSchema = z.object({
   source: z.enum(['generated', 'manual', 'edited']).default('generated'),
   fragmentIds: z.array(z.string().min(1)).default([]),
   paths: z.array(previewPathSchema).default([]),
+  depthProfile: operationDepthProfileSchema.optional(),
+  depthAnnotations: z.array(z.string().min(1)).default([]),
   warnings: z.array(z.string()).default([]),
 });
 export type OperationPreview = z.infer<typeof operationPreviewSchema>;
@@ -867,6 +870,15 @@ export function deriveOperationPreviews(model: ImportedModel, operations: DraftC
         : operation.source === 'edited'
           ? ['Edited generated operation preview is derived from the linked geometry and should be re-reviewed after regeneration changes.']
           : [];
+    const depthAnnotations = [
+      ...(operation.depthProfile?.targetDepthMm !== undefined
+        ? [`Target depth ${operation.depthProfile.targetDepthMm.toFixed(1)} mm below stock top.`]
+        : []),
+      ...(operation.depthProfile?.floorLevel
+        ? [`Floor level Z ${operation.depthProfile.floorLevel.zMm.toFixed(1)} mm.`]
+        : []),
+      ...(operation.depthProfile?.assumptions.map((assumption) => assumption.label) ?? []),
+    ];
     return operationPreviewSchema.parse({
       id: previewId,
       operationId: operation.id,
@@ -877,6 +889,8 @@ export function deriveOperationPreviews(model: ImportedModel, operations: DraftC
       source: operation.source,
       fragmentIds: link?.fragmentIds ?? [],
       paths: buildPreviewPaths(operation, previewId, fragment, entity),
+      depthProfile: operation.depthProfile,
+      depthAnnotations,
       warnings,
     });
   });

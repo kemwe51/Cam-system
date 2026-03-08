@@ -249,6 +249,17 @@ function createManualOperation(plan: DraftCamPlan, featureId: string, baseOperat
     warnings: baseOperation?.warnings ?? [],
     assumptions: baseOperation?.assumptions ?? [],
     machiningIntent: feature.machiningIntent,
+    depthProfile: baseOperation?.depthProfile ?? relatedOperation?.depthProfile ?? (feature.depthModel
+      ? {
+          setupPlane: feature.depthModel.setupPlane,
+          stockTop: feature.depthModel.stockTop,
+          floorLevel: feature.depthModel.floorLevel,
+          depthRange: feature.depthModel.depthRange,
+          ...(feature.depthMm > 0 ? { targetDepthMm: feature.depthMm } : {}),
+          assumptions: feature.depthModel.assumptions,
+          warnings: feature.depthModel.warnings,
+        }
+      : undefined),
   };
 }
 
