@@ -1,6 +1,10 @@
 node_modules
 coverage
 dist
+build
+**/dist
+**/build
 .vite
 *.tsbuildinfo
+**/*.tsbuildinfo
 .DS_Store

@@ -5,10 +5,11 @@
 - `apps/web`: React + Vite CAM workbench optimized for mobile usability but arranged for desktop-class CAM authoring
 - `apps/api`: minimal Node HTTP API exposing import, planning, persistence, review, and approval routes
 - `packages/shared`: shared Zod schemas, deterministic planning contracts, machine/setup/tool catalog foundations
+- `packages/geometry2d`: practical 2D geometry document + graph domain and DXF subset parser
 - `packages/model`: geometry/model pipeline contracts shared by importers, API, viewport, and review context
 - `packages/engine`: deterministic planning logic for structured JSON part input
 - `packages/ai`: advisory OpenAI Responses API shell returning structured review output only
-- `packages/importers`: importer interfaces, registry, JSON importer, and honest DXF/STEP workflow placeholders
+- `packages/importers`: importer interfaces, registry, JSON importer, practical DXF subset importer, and honest STEP workflow placeholder
 - `examples`: sample JSON part input used by the demo flow
 
 ## Responsibility split
@@ -34,9 +35,29 @@ The model/import pipeline owns:
 
 The AI package is advisory only. It reviews a deterministic draft plan plus source/model/manual-override context and returns structured JSON. It does not create manufacturing authority, output toolpaths, or generate G-code.
 
-## Geometry & Import Pipeline v3
+## DXF & 2D Geometry Pipeline v4
 
-`@cam/model` is the internal contract boundary between importers, planning, persistence, and the viewport.
+`@cam/geometry2d` is now the internal contract boundary for imported planar source data.
+
+Current geometry vocabulary includes:
+
+- `Geometry2DDocument`
+- `Geometry2DEntity`
+- `GeometryLayer`
+- `GeometryBounds`
+- `GeometryTransform`
+- `GeometryLoop`
+- `GeometryChain`
+- `GeometryProfile`
+- `GeometryRegion`
+- `GeometryNode`
+- `GeometryEdge`
+- `GeometryGraph`
+- `GeometryWarning`
+- `GeometryUnit`
+- `GeometrySourceRef`
+
+`@cam/model` remains the bridge between importers, planning, persistence, and the viewport.
 
 Current model vocabulary includes:
 
@@ -57,14 +78,17 @@ Important boundary:
 
 - this is **not** a CAD kernel
 - this is **not** a B-Rep
-- current geometry is derived from structured source metadata
-- DXF/STEP remain placeholder workflow sessions until real parsing exists
+- current geometry is either structured-source metadata or parsed planar DXF source
+- DXF support is limited to a practical 2D subset
+- STEP remains a placeholder workflow session until real parsing exists
 
 ## Import workflow
 
 The API now distinguishes:
 
 - **imported source**: file type/name/media metadata
+- **derived 2D geometry**: parsed DXF source document + graph when available
+- **extracted features**: deterministic feature candidates with explicit source geometry references, confidence, inference method, and warnings
 - **derived model**: source/model/view entities and derived geometry fragments
 - **draft project**: current mutable workbench state and metadata
 - **deterministic plan**: authoritative engine output and manual overrides under review
@@ -127,13 +151,25 @@ Manual programming still remains practical and reducer-driven:
 - relink operation to a different feature
 - local undo/redo
 
-## Viewport pipeline
+## DXF subset and viewport pipeline
+
+Current practical DXF subset:
+
+- `LINE`
+- `ARC`
+- `CIRCLE`
+- `POINT`
+- `TEXT` / `MTEXT` as metadata-only marking candidates
+- `LWPOLYLINE`
+- `POLYLINE`
+
+Unsupported DXF content is preserved as warnings rather than silently ignored. This milestone still does not claim support for splines, hatches, blocks, dimensions, ellipses, or 3D DXF entities.
 
 The viewport scene builder now consumes `@cam/model` types and separates:
 
-- source/model layer
+- imported geometry layer
 - stock layer
-- feature layer
+- extracted feature layer
 - selection layer
 - operation preview layer
 
@@ -146,13 +182,12 @@ Operation previews are intentionally honest overlays only:
 - engrave → text markers
 - unlinked/manual cases → generic preview badge
 
-These are **not** toolpaths.
+These are **not** toolpaths. Imported geometry remains 2D interpretation only, optional stock thickness is derived planning context only, and any simple extrusion/context rendering is advisory rather than a solid model.
 
 ## Current boundaries
 
 This repository does not yet implement:
 
-- real DXF parsing
 - real STEP parsing
 - a geometry kernel or B-Rep modeler
 - machine simulation

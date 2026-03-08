@@ -4,6 +4,7 @@ import './App.css';
 import {
   approveDraftPlan,
   generateDraftPlan,
+  importDxfText,
   importJsonText,
   importPlaceholder,
   importSampleJson,
@@ -135,6 +136,7 @@ function App() {
   const [jsonImportText, setJsonImportText] = useState<string>('');
   const [jsonFileName, setJsonFileName] = useState<string>('structured-part.json');
   const [placeholderFileName, setPlaceholderFileName] = useState<string>('incoming-model.dxf');
+  const [dxfImportText, setDxfImportText] = useState<string>('');
 
   useEffect(() => {
     void initializeWorkbench();
@@ -153,6 +155,10 @@ function App() {
     () => state.draftPlan?.features.find((feature) => feature.id === selectedFeatureId) ?? null,
     [selectedFeatureId, state.draftPlan],
   );
+  const selectedGeometryId = useMemo(
+    () => (state.selectedEntity?.type === 'geometry' ? state.selectedEntity.id : null),
+    [state.selectedEntity],
+  );
   const selectedOperation = useMemo(
     () =>
       state.selectedEntity?.type === 'operation'
@@ -170,6 +176,24 @@ function App() {
     () => new Map((state.draftPlan?.features ?? []).map((feature) => [feature.id, feature.name])),
     [state.draftPlan?.features],
   );
+  const selectedGeometryEntity = useMemo(
+    () => (selectedGeometryId ? state.currentModel?.entities.find((entity) => entity.id === selectedGeometryId) ?? null : null),
+    [selectedGeometryId, state.currentModel],
+  );
+  const selectedExtractedFeature = useMemo(
+    () =>
+      selectedFeatureId
+        ? state.currentModel?.extractedFeatures.find((feature) => feature.mappedFeatureId === selectedFeatureId) ?? null
+        : null,
+    [selectedFeatureId, state.currentModel],
+  );
+  const geometryLinkedFeatures = useMemo(
+    () =>
+      selectedGeometryId
+        ? state.currentModel?.extractedFeatures.filter((feature) => feature.sourceGeometryRefs.includes(selectedGeometryId)) ?? []
+        : [],
+    [selectedGeometryId, state.currentModel],
+  );
   const visibleOperationGroups = useMemo(
     () => operationGroups(filteredOperations, operationGroupMode, featureNames),
     [featureNames, filteredOperations, operationGroupMode],
@@ -179,6 +203,10 @@ function App() {
     [state.draftPlan, state.sample],
   );
   const unsavedSummary = useMemo(() => unsavedOperationSummary(state.draftPlan), [state.draftPlan]);
+  const combinedWarnings = useMemo(
+    () => [...new Set([...(state.currentImportSession?.warnings ?? []), ...(state.currentProject?.warnings ?? []), ...(state.currentModel?.warnings ?? [])])],
+    [state.currentImportSession?.warnings, state.currentModel?.warnings, state.currentProject?.warnings],
+  );
 
   async function withBusy(nextBusy: BusyState, action: () => Promise<void>): Promise<void> {
     try {
@@ -245,7 +273,28 @@ function App() {
     });
   }
 
-  async function handlePlaceholderImport(format: 'dxf' | 'step'): Promise<void> {
+  async function handleImportDxfText(): Promise<void> {
+    if (!dxfImportText.trim()) {
+      setError('Paste DXF text before importing.');
+      return;
+    }
+
+    await withBusy('import', async () => {
+      const filename = placeholderFileName || 'incoming-model.dxf';
+      const importSession = await importDxfText(dxfImportText, filename);
+      dispatch({
+        type: 'importSessionLoaded',
+        importSession,
+        message: `Imported DXF source ${importSession.source.filename} with ${importSession.importedModel?.geometryDocument?.entities.length ?? 0} geometry entities.`,
+      });
+      setActiveLeftTab('model');
+      setActiveBottomTab('metadata');
+      setViewOrientation('top');
+      setViewMode('wireframe');
+    });
+  }
+
+  async function handlePlaceholderImport(format: 'step'): Promise<void> {
     await withBusy('import', async () => {
       const filename = placeholderFileName || `incoming-model.${format}`;
       const importSession = await importPlaceholder(format, filename);
@@ -381,15 +430,25 @@ function App() {
         </div>
         <div className="tree-folder">
           <div className="tree-folder-header">
-            <strong>DXF / STEP placeholders</strong>
-            <span>foundational</span>
+            <strong>Import DXF text</strong>
+            <span>subset</span>
           </div>
           <input value={placeholderFileName} onChange={(event) => setPlaceholderFileName(event.target.value)} placeholder="incoming-model.dxf" />
+          <textarea rows={8} value={dxfImportText} onChange={(event) => setDxfImportText(event.target.value)} placeholder="Paste ASCII DXF text here" />
           <div className="chip-row">
-            <button className="secondary-button" onClick={() => void handlePlaceholderImport('dxf')} disabled={busy !== null}>Register DXF</button>
+            <button className="secondary-button" onClick={() => void handleImportDxfText()} disabled={busy !== null || !dxfImportText.trim()}>Import DXF</button>
+          </div>
+          <small>Supported DXF subset: LINE, ARC, CIRCLE, POINT, TEXT/MTEXT metadata, LWPOLYLINE, and POLYLINE. Unsupported entities become warnings instead of silent failures.</small>
+        </div>
+        <div className="tree-folder">
+          <div className="tree-folder-header">
+            <strong>STEP placeholder</strong>
+            <span>foundational</span>
+          </div>
+          <div className="chip-row">
             <button className="secondary-button" onClick={() => void handlePlaceholderImport('step')} disabled={busy !== null}>Register STEP</button>
           </div>
-          <small>These routes record source metadata and warnings only. They do not parse DXF or STEP geometry yet.</small>
+          <small>STEP remains a workflow placeholder only. No real STEP topology or machining support is claimed here.</small>
         </div>
         {state.currentImportSession ? (
           <div className="tree-note">
@@ -437,6 +496,49 @@ function App() {
             {state.currentModel.bounds.size[0].toFixed(1)} × {state.currentModel.bounds.size[1].toFixed(1)} × {state.currentModel.bounds.size[2].toFixed(1)} mm
           </small>
         </div>
+        {state.currentModel.geometryDocument ? (
+          <div className="tree-folder">
+            <div className="tree-folder-header">
+              <strong>Imported geometry</strong>
+              <span>{state.currentModel.geometryDocument.entities.length}</span>
+            </div>
+            <small>
+              Layers {state.currentModel.geometryDocument.layers.length} · open profiles {state.currentModel.geometryGraph?.openProfileIds.length ?? 0} · closed profiles {state.currentModel.geometryGraph?.closedProfileIds.length ?? 0}
+            </small>
+            <ul className="detail-list">
+              {state.currentModel.geometryDocument.layers.map((layer) => (
+                <li key={layer.id}>
+                  <strong>{layer.name}</strong>
+                  <span>{layer.entityIds.length} entities</span>
+                </li>
+              ))}
+            </ul>
+            <div className="tree-stack">
+              {state.currentModel.entities.filter((entity) => entity.kind === 'source_geometry').slice(0, 12).map((entity) => (
+                <button
+                  key={entity.id}
+                  type="button"
+                  className={panelSelectionClass(state.selectedEntity?.type === 'geometry' && state.selectedEntity.id === entity.id)}
+                  onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'geometry', id: entity.id } })}
+                >
+                  <strong>{entity.label}</strong>
+                  <span>{entity.metadata.layerName ?? entity.metadata.layerId ?? entity.metadata.type}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {state.currentModel.extractedFeatures.length > 0 ? (
+          <div className="tree-folder">
+            <div className="tree-folder-header">
+              <strong>Extracted features</strong>
+              <span>{state.currentModel.extractedFeatures.length}</span>
+            </div>
+            <small>
+              Unclassified geometry {state.currentModel.geometryDocument?.entities.filter((entity) => !state.currentModel!.extractedFeatures.some((feature) => feature.sourceGeometryRefs.includes(entity.id))).length ?? 0}
+            </small>
+          </div>
+        ) : null}
       </div>
     ) : renderImportPanel();
   }
@@ -452,10 +554,15 @@ function App() {
             onClick={() => dispatch({ type: 'selectEntity', entity: { type: 'feature', id: feature.id } })}
           >
             <strong>{feature.name}</strong>
-            <span>{feature.kind.replace('_', ' ')}</span>
+            <span>{feature.kind.replace('_', ' ')} · {feature.origin === 'geometry_inferred' ? 'inferred' : 'structured'}</span>
             <small>
               Qty {feature.quantity} · {feature.lengthMm.toFixed(1)} × {feature.widthMm.toFixed(1)} × {feature.depthMm.toFixed(1)} mm
             </small>
+            <div className="chip-row">
+              {feature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
+              {feature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{feature.classificationState.replace('_', ' ')}</span> : null}
+              {feature.warnings.length > 0 ? <span className="chip chip-dirty">{feature.warnings.length} warnings</span> : null}
+            </div>
           </button>
         ))}
       </div>
@@ -663,15 +770,79 @@ function App() {
     if (selectedFeature && state.draftPlan) {
       return (
         <div className="inspector-form">
-          <span className="chip">{selectedFeature.kind.replace('_', ' ')}</span>
+          <div className="chip-row">
+            <span className="chip">{selectedFeature.kind.replace('_', ' ')}</span>
+            {selectedFeature.origin === 'geometry_inferred' ? <span className="chip">imported geometry</span> : null}
+            {selectedFeature.classificationState !== 'automatic' ? <span className="chip chip-dirty">{selectedFeature.classificationState.replace('_', ' ')}</span> : null}
+            {selectedFeature.warnings.length > 0 ? <span className="chip chip-dirty">{selectedFeature.warnings.length} warnings</span> : null}
+          </div>
           <dl className="detail-pairs">
             <div><dt>Quantity</dt><dd>{selectedFeature.quantity}</dd></div>
             <div><dt>Depth</dt><dd>{selectedFeature.depthMm.toFixed(1)} mm</dd></div>
             <div><dt>Envelope</dt><dd>{selectedFeature.lengthMm.toFixed(1)} × {selectedFeature.widthMm.toFixed(1)} mm</dd></div>
             <div><dt>Related ops</dt><dd>{orderedOperations.filter((operation) => operation.featureId === selectedFeature.id).length}</dd></div>
+            <div><dt>Confidence</dt><dd>{(selectedFeature.confidence * 100).toFixed(0)}%</dd></div>
+            <div><dt>Inference</dt><dd>{selectedFeature.inferenceMethod ?? 'Structured input'}</dd></div>
+            {selectedExtractedFeature ? <div><dt>Extracted kind</dt><dd>{selectedExtractedFeature.kind.replace('_', ' ')}</dd></div> : null}
           </dl>
           <ul className="detail-list">{selectedFeature.notes.map((note) => <li key={note}>{note}</li>)}</ul>
+          {selectedFeature.sourceGeometryRefs.length > 0 ? (
+            <ul className="detail-list">
+              {selectedFeature.sourceGeometryRefs.map((ref) => <li key={ref}>Source geometry: {ref}</li>)}
+            </ul>
+          ) : null}
+          {selectedFeature.warnings.length > 0 ? (
+            <ul className="detail-list">
+              {selectedFeature.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+            </ul>
+          ) : null}
+          {selectedFeature.origin === 'geometry_inferred' ? (
+            <label>
+              <span>Manual reclassification</span>
+              <select
+                value={selectedFeature.classificationState === 'ignored' ? 'ignore' : selectedFeature.kind}
+                onChange={(event) =>
+                  dispatch({
+                    type: 'reclassifyFeature',
+                    featureId: selectedFeature.id,
+                    nextKind: event.target.value as 'contour' | 'pocket' | 'slot' | 'hole_group' | 'ignore' | 'unclassified',
+                    message: `Updated feature classification for ${selectedFeature.name}.`,
+                  })}
+              >
+                <option value="contour">Contour</option>
+                <option value="pocket">Pocket</option>
+                <option value="slot">Slot</option>
+                <option value="hole_group">Hole group</option>
+                <option value="unclassified">Unclassified</option>
+                <option value="ignore">Ignore</option>
+              </select>
+            </label>
+          ) : null}
           <button type="button" onClick={() => dispatch({ type: 'addManualOperation', featureId: selectedFeature.id, message: `Added a manual operation for ${selectedFeature.name}.` })}>Add manual operation</button>
+        </div>
+      );
+    }
+
+    if (selectedGeometryEntity) {
+      return (
+        <div className="inspector-form">
+          <span className="chip">imported geometry</span>
+          <dl className="detail-pairs">
+            <div><dt>Entity</dt><dd>{selectedGeometryEntity.label}</dd></div>
+            <div><dt>Layer</dt><dd>{selectedGeometryEntity.metadata.layerName ?? selectedGeometryEntity.metadata.layerId ?? 'unknown'}</dd></div>
+            <div><dt>Bounds</dt><dd>{selectedGeometryEntity.bounds.size[0].toFixed(1)} × {selectedGeometryEntity.bounds.size[1].toFixed(1)} mm</dd></div>
+            <div><dt>Linked features</dt><dd>{geometryLinkedFeatures.length}</dd></div>
+          </dl>
+          <ul className="detail-list">
+            {geometryLinkedFeatures.length > 0
+              ? geometryLinkedFeatures.map((feature) => (
+                  <li key={feature.id}>
+                    <strong>{feature.label}</strong>
+                    <span>{feature.kind.replace('_', ' ')} · {(feature.confidence * 100).toFixed(0)}%</span>
+                  </li>
+                ))
+              : <li>No extracted feature is linked to this geometry entity yet.</li>}
+          </ul>
         </div>
       );
     }
@@ -774,12 +945,12 @@ function App() {
             </dl>
           </article>
           <article className="bottom-card">
-            <header><h3>Warnings + revision summary</h3></header>
-            <ul className="detail-list">
-              {[...(state.currentImportSession?.warnings ?? []), ...(state.currentProject?.warnings ?? []), ...(state.currentModel?.warnings ?? [])].map((warning, index) => (
+             <header><h3>Warnings + revision summary</h3></header>
+             <ul className="detail-list">
+              {combinedWarnings.map((warning, index) => (
                 <li key={`${warning}-${index}`}>{warning}</li>
               ))}
-              {!(state.currentImportSession?.warnings.length || state.currentProject?.warnings.length || state.currentModel?.warnings.length) ? <li>No current source/model warnings.</li> : null}
+              {combinedWarnings.length === 0 ? <li>No current source/model warnings.</li> : null}
             </ul>
             <ul className="detail-list">
               {(state.currentProject?.revisions ?? []).slice(-5).reverse().map((revision) => (
@@ -787,6 +958,15 @@ function App() {
               ))}
               {!(state.currentProject?.revisions.length) ? <li>No saved revisions yet.</li> : null}
             </ul>
+            {state.currentModel?.geometryDocument ? (
+              <dl className="detail-pairs">
+                <div><dt>DXF units</dt><dd>{state.currentModel.geometryDocument.units}</dd></div>
+                <div><dt>Entity count</dt><dd>{state.currentModel.geometryDocument.entities.length}</dd></div>
+                <div><dt>Open profiles</dt><dd>{state.currentModel.geometryGraph?.openProfileIds.length ?? 0}</dd></div>
+                <div><dt>Closed profiles</dt><dd>{state.currentModel.geometryGraph?.closedProfileIds.length ?? 0}</dd></div>
+                <div><dt>Extracted features</dt><dd>{state.currentModel.extractedFeatures.length}</dd></div>
+              </dl>
+            ) : null}
           </article>
         </div>
       );
@@ -803,7 +983,7 @@ function App() {
     <main className="workbench-shell v2-shell">
       <header className="app-bar">
         <div className="app-bar-project">
-          <p className="eyebrow">Geometry & Import Pipeline v3</p>
+          <p className="eyebrow">DXF & 2D Geometry Pipeline v4</p>
           <h1>{state.sample?.partName ?? state.currentImportSession?.source.filename ?? 'CAM project session'}</h1>
           <p>
             Rev {state.sample?.revision ?? '—'} · Source {state.currentImportSession?.source.type ?? state.currentProject?.sourceType ?? 'none'} · Model {state.currentModel?.status ?? 'none'} · Deterministic planning authoritative · AI advisory only
@@ -838,7 +1018,7 @@ function App() {
         <div className="app-bar-status">
           <span className={state.dirty ? 'chip chip-dirty' : 'chip'}>{state.dirty ? 'Dirty draft' : 'Draft synced'}</span>
           {state.draftPlan ? <span className="chip">{state.draftPlan.approval.state.replace('_', ' ')}</span> : null}
-          <span className="chip">Warnings {(state.currentImportSession?.warnings.length ?? 0) + (state.currentModel?.warnings.length ?? 0) + (state.currentProject?.warnings.length ?? 0)}</span>
+          <span className="chip">Warnings {combinedWarnings.length}</span>
           <span className="status-copy">Last save: {formatTimestamp(state.lastSavedAt ?? state.currentProject?.updatedAt)}</span>
         </div>
       </header>
@@ -888,8 +1068,10 @@ function App() {
                 operations={state.draftPlan.operations}
                 selectedFeatureId={selectedFeatureId}
                 selectedOperationId={selectedOperation?.id ?? null}
+                selectedGeometryId={selectedGeometryId}
                 onSelectFeature={(featureId) => dispatch({ type: 'selectEntity', entity: featureId ? { type: 'feature', id: featureId } : null })}
                 onSelectOperation={(operationId) => dispatch({ type: 'selectEntity', entity: operationId ? { type: 'operation', id: operationId } : null })}
+                onSelectGeometry={(geometryId) => dispatch({ type: 'selectEntity', entity: { type: 'geometry', id: geometryId } })}
                 viewOrientation={viewOrientation}
                 viewMode={viewMode}
               />

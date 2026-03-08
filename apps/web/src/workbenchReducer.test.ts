@@ -130,4 +130,38 @@ describe('workbenchReducer', () => {
     expect(record?.sourceFilename).toBe('sample.json');
     expect(record?.sourceImportId).toBe('import-json-sample');
   });
+
+  it('supports manual reclassification of inferred features without breaking draft state', () => {
+    const plan = planPart({
+      ...samplePartInput,
+      contours: [
+        {
+          ...samplePartInput.contours[0]!,
+          origin: 'geometry_inferred',
+          confidence: 0.72,
+          inferenceMethod: 'fixture',
+          warnings: ['Review inferred contour classification.'],
+          sourceGeometryRefs: ['geom-lwpolyline-0001'],
+          classificationState: 'automatic',
+        },
+      ],
+    });
+    const state = workbenchReducer(initialWorkbenchState, {
+      type: 'planLoaded',
+      plan,
+      message: 'loaded',
+    });
+    const featureId = state.draftPlan!.features.find((feature) => feature.origin === 'geometry_inferred')!.id;
+
+    const reclassified = workbenchReducer(state, {
+      type: 'reclassifyFeature',
+      featureId,
+      nextKind: 'slot',
+      message: 'reclassify',
+    });
+
+    expect(reclassified.draftPlan?.features.find((feature) => feature.id === featureId)?.kind).toBe('slot');
+    expect(reclassified.draftPlan?.features.find((feature) => feature.id === featureId)?.classificationState).toBe('manual_override');
+    expect(reclassified.dirty).toBe(true);
+  });
 });

@@ -1,12 +1,15 @@
 import {
   createModelSource,
   createPlaceholderImportedModel,
+  deriveImportedModelFromGeometry,
   deriveImportedModelFromPart,
   importedModelSchema,
   modelSourceSchema,
   type ImportedModel,
   type ModelSource,
 } from '@cam/model';
+import { extractGeometryFeatures } from '@cam/engine';
+import { buildGeometryGraph, parseDxfGeometry2D } from '@cam/geometry2d';
 import { partInputSchema, type PartInput } from '@cam/shared';
 
 export type ImportFormat = 'json' | 'dxf' | 'step';
@@ -92,6 +95,71 @@ export class JsonPartImporter implements PartImporter {
   }
 }
 
+export class DxfPartImporter implements PartImporter {
+  readonly format = 'dxf' as const;
+
+  async importPart(source: ImportedPartSource): Promise<ImportResult> {
+    if (source.fileType !== 'dxf') {
+      throw new Error(sourceMismatchMessage(this.format, source.fileType));
+    }
+
+    const geometryDocument = parseDxfGeometry2D(source.content, `geometry-${sanitizeFileName(source.fileName)}`);
+    const graph = buildGeometryGraph(geometryDocument);
+    const extraction = extractGeometryFeatures(geometryDocument, graph);
+    const warnings = [
+      ...geometryDocument.warnings.map((warning) => warning.message),
+      ...extraction.warnings,
+      'DXF import supports LINE, ARC, CIRCLE, POINT, TEXT/MTEXT metadata, LWPOLYLINE, and POLYLINE records for planar 2D source interpretation only.',
+      'Unsupported entities are preserved as warnings. Blocks, hatches, dimensions, splines, ellipses, and true 3D geometry are not interpreted in this milestone.',
+      'DXF source is 2D only. Stock thickness and feature depths are assumed planning defaults that require human review before release.',
+    ];
+    const sourceModel = modelSource(source, [
+      `DXF entities imported: ${geometryDocument.entities.length}`,
+      `DXF layers imported: ${geometryDocument.layers.length}`,
+      `Open profiles: ${graph.openProfileIds.length}`,
+      `Closed profiles: ${graph.closedProfileIds.length}`,
+      `Extracted manufacturing candidates: ${extraction.features.length}`,
+    ]);
+    const extractedFeatures = extraction.features.map((feature) => ({
+      id: feature.id,
+      label: feature.label,
+      kind: feature.kind,
+      ...(feature.plannedFeatureId ? { mappedFeatureId: feature.plannedFeatureId } : {}),
+      sourceGeometryRefs: feature.sourceGeometryRefs,
+      confidence: feature.confidence,
+      inferenceMethod: feature.inferenceMethod,
+      warnings: feature.warnings,
+      bounds: feature.bounds,
+      classificationState: 'automatic' as const,
+    }));
+    const deterministicPartInput = partInputSchema.parse(extraction.partInput);
+    const importedModel = importedModelSchema.parse(
+      deriveImportedModelFromGeometry(
+        sourceModel,
+        geometryDocument,
+        graph,
+        extractedFeatures,
+        deterministicPartInput,
+        warnings,
+      ),
+    );
+
+    return {
+      importStatus: 'success',
+      sourceFileType: source.fileType,
+      sourceFileName: source.fileName,
+      source: importedModel.source,
+      warnings,
+      importedModel,
+      deterministicPartInput,
+    };
+  }
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/\.[^.]+$/, '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'dxf';
+}
+
 class NotImplementedImporter implements PartImporter {
   constructor(
     public readonly format: ImportFormat,
@@ -115,10 +183,7 @@ class NotImplementedImporter implements PartImporter {
   }
 }
 
-export const dxfPartImporter = new NotImplementedImporter('dxf', [
-  'DXF import is not implemented yet. This session only records file metadata and the future workflow boundary.',
-  'Actionable next step: parse DXF entities into closed/open 2D profiles, hole centers, layers, and deterministic feature candidates.',
-]);
+export const dxfPartImporter = new DxfPartImporter();
 
 export const stepPartImporter = new NotImplementedImporter('step', [
   'STEP import is not implemented yet. This session only records file metadata and the future workflow boundary.',

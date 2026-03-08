@@ -8,8 +8,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @cam/shared && npm run build --workspace @cam/model && npm run build --workspace @cam/importers && npm run build --workspace @cam/engine && npm run build --workspace @cam/ai && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
-    "test": "npm run build --workspace @cam/shared && npm run build --workspace @cam/model && npm run build --workspace @cam/importers && npm run build --workspace @cam/engine && npm run build --workspace @cam/ai && npm run test --workspaces --if-present",
+    "build": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai && npm run build --workspace @cam/api && npm run build --workspace @cam/web",
+    "test": "npm run build --workspace @cam/shared && npm run build --workspace @cam/geometry2d && npm run build --workspace @cam/model && npm run build --workspace @cam/engine && npm run build --workspace @cam/importers && npm run build --workspace @cam/ai && npm run test --workspaces --if-present",
     "test:all": "npm run test --workspaces --if-present",
     "dev:api": "npm run dev --workspace @cam/api",
     "dev:web": "npm run dev --workspace @cam/web"

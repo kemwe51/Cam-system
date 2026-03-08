@@ -13,6 +13,7 @@
   "dependencies": {
     "@cam/ai": "file:../../packages/ai",
     "@cam/engine": "file:../../packages/engine",
+    "@cam/geometry2d": "file:../../packages/geometry2d",
     "@cam/importers": "file:../../packages/importers",
     "@cam/model": "file:../../packages/model",
     "@cam/shared": "file:../../packages/shared"

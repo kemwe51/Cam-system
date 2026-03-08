@@ -47,6 +47,7 @@ export type WorkbenchAction =
   | { type: 'moveOperation'; operationId: string; direction: 'up' | 'down'; message: string }
   | { type: 'toggleOperation'; operationId: string; message: string }
   | { type: 'addManualOperation'; featureId: string; message: string }
+  | { type: 'reclassifyFeature'; featureId: string; nextKind: 'contour' | 'pocket' | 'slot' | 'hole_group' | 'ignore' | 'unclassified'; message: string }
   | { type: 'duplicateOperation'; operationId: string; message: string }
   | { type: 'deleteManualOperation'; operationId: string; message: string }
   | { type: 'undo'; message: string }
@@ -276,6 +277,10 @@ export function resolveSelectedFeatureId(plan: DraftCamPlan | null, entity: Sele
 
   if (entity.type === 'operation') {
     return plan.operations.find((operation) => operation.id === entity.id)?.featureId ?? null;
+  }
+
+  if (entity.type === 'geometry') {
+    return null;
   }
 
   return null;
@@ -513,6 +518,71 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             'Manual operations were added to the draft. Review and approval are required before release.',
           ),
           selectedEntity: { type: 'operation', id: manualOperation.id },
+        },
+        action.message,
+      );
+    }
+    case 'reclassifyFeature': {
+      if (!state.draftPlan) {
+        return state;
+      }
+      const nextFeatures = state.draftPlan.features.map((feature) => {
+        if (feature.id !== action.featureId) {
+          return feature;
+        }
+
+        const nextWarnings = [...feature.warnings];
+        if (action.nextKind === 'ignore' || action.nextKind === 'unclassified') {
+          if (!nextWarnings.includes('Manual classification changed this imported feature to ignore/unclassified. Review linked operations before release.')) {
+            nextWarnings.push('Manual classification changed this imported feature to ignore/unclassified. Review linked operations before release.');
+          }
+          return {
+            ...feature,
+            classificationState: 'ignored' as const,
+            warnings: nextWarnings,
+          };
+        }
+
+        if (!nextWarnings.includes(`Manual classification override set the feature to ${action.nextKind}. Existing operations remain draft-level and must be reviewed.`)) {
+          nextWarnings.push(`Manual classification override set the feature to ${action.nextKind}. Existing operations remain draft-level and must be reviewed.`);
+        }
+        return {
+          ...feature,
+          kind: action.nextKind,
+          classificationState: 'manual_override' as const,
+          warnings: nextWarnings,
+        };
+      });
+      const nextOperations = state.draftPlan.operations.map((operation) =>
+        operation.featureId !== action.featureId || operation.origin === 'manual'
+          ? operation
+          : {
+              ...operation,
+              enabled: action.nextKind === 'ignore' || action.nextKind === 'unclassified' ? false : operation.enabled,
+              isDirty: true,
+            },
+      );
+      const draftEdit = applyDraftEdit(
+        {
+          ...state,
+          draftPlan: {
+            ...state.draftPlan,
+            features: nextFeatures,
+          },
+        },
+        nextOperations,
+        'Feature classification was overridden in the draft. Imported-geometry assumptions and linked operations require human review before release.',
+      );
+      return appendConsole(
+        {
+          ...draftEdit,
+          draftPlan: draftEdit.draftPlan
+            ? {
+                ...draftEdit.draftPlan,
+                features: nextFeatures,
+              }
+            : null,
+          selectedEntity: { type: 'feature', id: action.featureId },
         },
         action.message,
       );

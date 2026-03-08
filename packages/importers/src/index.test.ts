@@ -9,6 +9,63 @@ import {
   type ImportedPartSource,
 } from './index.js';
 
+const sampleDxf = `0
+SECTION
+2
+HEADER
+9
+$INSUNITS
+70
+4
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+8
+OUTER
+90
+4
+70
+1
+10
+0
+20
+0
+10
+80
+20
+0
+10
+80
+20
+50
+10
+0
+20
+50
+0
+CIRCLE
+8
+HOLES
+10
+30
+20
+20
+40
+4
+0
+SPLINE
+8
+IGNORED
+0
+ENDSEC
+0
+EOF`;
+
 function source(fileType: ImportedPartSource['fileType'], content: string, fileName = `sample.${fileType}`): ImportedPartSource {
   return {
     sourceId: `${fileType}-source`,
@@ -31,14 +88,17 @@ describe('importers', () => {
     expect(result.warnings[0]).toContain('Structured JSON import succeeded');
   });
 
-  it('returns structured placeholder responses for DXF and STEP adapters', async () => {
-    const dxfResult = await dxfPartImporter.importPart(source('dxf', '0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF'));
+  it('imports a practical DXF subset and preserves unsupported-entity warnings', async () => {
+    const dxfResult = await dxfPartImporter.importPart(source('dxf', sampleDxf));
     const stepResult = await stepPartImporter.importPart(source('step', 'ISO-10303-21;END-ISO-10303-21;'));
 
-    expect(dxfResult.importStatus).toBe('not_implemented');
+    expect(dxfResult.importStatus).toBe('success');
     expect(dxfResult.sourceFileName).toBe('sample.dxf');
-    expect(dxfResult.warnings.join(' ')).toContain('Actionable next step');
-    expect(dxfResult.importedModel.status).toBe('placeholder');
+    expect(dxfResult.warnings.join(' ')).toContain('Unsupported entities');
+    expect(dxfResult.importedModel.status).toBe('derived');
+    expect(dxfResult.importedModel.geometryDocument?.entities.length).toBeGreaterThan(0);
+    expect(dxfResult.importedModel.extractedFeatures.some((feature) => feature.kind === 'outside_contour')).toBe(true);
+    expect(dxfResult.deterministicPartInput?.contours.length).toBeGreaterThan(0);
     expect(stepResult.importStatus).toBe('not_implemented');
     expect(stepResult.importedModel.source.type).toBe('step');
     expect(stepResult.warnings.join(' ')).toContain('real geometry kernel');
